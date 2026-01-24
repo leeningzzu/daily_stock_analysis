@@ -85,6 +85,11 @@ class Config:
     custom_webhook_urls: List[str] = field(default_factory=list)
     custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
     
+    # Discord 通知配置
+    discord_bot_token: Optional[str] = None  # Discord Bot Token
+    discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
+    discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
     
@@ -125,6 +130,32 @@ class Config:
     webui_enabled: bool = False
     webui_host: str = "127.0.0.1"
     webui_port: int = 8000
+    
+    # === 机器人配置 ===
+    bot_enabled: bool = True              # 是否启用机器人功能
+    bot_command_prefix: str = "/"         # 命令前缀
+    bot_rate_limit_requests: int = 10     # 频率限制：窗口内最大请求数
+    bot_rate_limit_window: int = 60       # 频率限制：窗口时间（秒）
+    bot_admin_users: List[str] = field(default_factory=list)  # 管理员用户 ID 列表
+    
+    # 飞书机器人（事件订阅）- 已有 feishu_app_id, feishu_app_secret
+    feishu_verification_token: Optional[str] = None  # 事件订阅验证 Token
+    feishu_encrypt_key: Optional[str] = None         # 消息加密密钥（可选）
+    feishu_stream_enabled: bool = False              # 是否启用 Stream 长连接模式（无需公网IP）
+    
+    # 钉钉机器人
+    dingtalk_app_key: Optional[str] = None      # 应用 AppKey
+    dingtalk_app_secret: Optional[str] = None   # 应用 AppSecret
+    dingtalk_stream_enabled: bool = False       # 是否启用 Stream 模式（无需公网IP）
+    
+    # 企业微信机器人（回调模式）
+    wecom_corpid: Optional[str] = None              # 企业 ID
+    wecom_token: Optional[str] = None               # 回调 Token
+    wecom_encoding_aes_key: Optional[str] = None    # 消息加解密密钥
+    wecom_agent_id: Optional[str] = None            # 应用 AgentId
+    
+    # Telegram 机器人 - 已有 telegram_bot_token, telegram_chat_id
+    telegram_webhook_secret: Optional[str] = None   # Webhook 密钥
     
     # 单例实例存储
     _instance: Optional['Config'] = None
@@ -208,6 +239,9 @@ class Config:
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
+            discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
+            discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
             wechat_max_bytes=int(os.getenv('WECHAT_MAX_BYTES', '4000')),
@@ -222,6 +256,27 @@ class Config:
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
+            # 机器人配置
+            bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
+            bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),
+            bot_rate_limit_requests=int(os.getenv('BOT_RATE_LIMIT_REQUESTS', '10')),
+            bot_rate_limit_window=int(os.getenv('BOT_RATE_LIMIT_WINDOW', '60')),
+            bot_admin_users=[u.strip() for u in os.getenv('BOT_ADMIN_USERS', '').split(',') if u.strip()],
+            # 飞书机器人
+            feishu_verification_token=os.getenv('FEISHU_VERIFICATION_TOKEN'),
+            feishu_encrypt_key=os.getenv('FEISHU_ENCRYPT_KEY'),
+            feishu_stream_enabled=os.getenv('FEISHU_STREAM_ENABLED', 'false').lower() == 'true',
+            # 钉钉机器人
+            dingtalk_app_key=os.getenv('DINGTALK_APP_KEY'),
+            dingtalk_app_secret=os.getenv('DINGTALK_APP_SECRET'),
+            dingtalk_stream_enabled=os.getenv('DINGTALK_STREAM_ENABLED', 'false').lower() == 'true',
+            # 企业微信机器人
+            wecom_corpid=os.getenv('WECOM_CORPID'),
+            wecom_token=os.getenv('WECOM_TOKEN'),
+            wecom_encoding_aes_key=os.getenv('WECOM_ENCODING_AES_KEY'),
+            wecom_agent_id=os.getenv('WECOM_AGENT_ID'),
+            # Telegram
+            telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
         )
     
     @classmethod
@@ -283,12 +338,14 @@ class Config:
         
         # 检查通知配置
         has_notification = (
-            self.wechat_webhook_url or
+            self.wechat_webhook_url or 
             self.feishu_webhook_url or
             (self.telegram_bot_token and self.telegram_chat_id) or
             (self.email_sender and self.email_password) or
             (self.pushover_user_key and self.pushover_api_token) or
-            (self.custom_webhook_urls and self.custom_webhook_bearer_token)
+            (self.custom_webhook_urls and self.custom_webhook_bearer_token) or
+            (self.discord_bot_token and self.discord_main_channel_id) or
+            self.discord_webhook_url
         )
         if not has_notification:
             warnings.append("提示：未配置通知渠道，将不发送推送通知")

@@ -218,7 +218,7 @@ daily_stock_analysis/
 - [x] 邮件通知（SMTP）
 - [x] 自定义 Webhook（支持钉钉、Discord、Slack、Bark 等）
 - [x] iOS/Android 推送（Pushover）
-
+- [x] 钉钉机器人 （已支持命令交互 >> [相关配置](docs/bot/dingding-bot-config.md)）
 ### 🤖 AI 模型支持
 - [x] Google Gemini（主力，免费额度）
 - [x] OpenAI 兼容 API（支持 GPT-4/DeepSeek/通义千问/Claude/文心一言 等）

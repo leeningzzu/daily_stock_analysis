@@ -3,7 +3,7 @@ name: 每日股票分析
 on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 7 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
   
   # 手动触发
   workflow_dispatch:
@@ -132,7 +132,7 @@ jobs:
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
-          ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
+          ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '20' }}
           
           # ==========================================
           # 系统配置

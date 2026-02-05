@@ -215,6 +215,9 @@ daily_stock_analysis/
 
 ## Docker 部署
 
+Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内置到 `static/`。
+如需覆盖静态资源，可挂载本地 `static/` 到容器内 `/app/static`。
+
 ### 快速启动
 
 ```bash
@@ -229,6 +232,7 @@ vim .env  # 填入 API Key 和配置
 # 3. 启动容器
 docker-compose -f ./docker/docker-compose.yml up -d webui      # WebUI 模式（推荐）
 docker-compose -f ./docker/docker-compose.yml up -d analyzer   # 定时任务模式
+docker-compose -f ./docker/docker-compose.yml up -d server     # FastAPI Web模式（和WebUI模式占用相同端口注意避免冲突）
 docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两种模式
 
 # 4. 访问 WebUI
@@ -244,7 +248,10 @@ docker-compose -f ./docker/docker-compose.yml logs -f webui
 |------|------|------|
 | `docker-compose -f ./docker/docker-compose.yml up -d webui` | WebUI 模式，手动触发分析 | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | 定时任务模式，每日自动执行 | - |
+| `docker-compose -f ./docker/docker-compose.yml up -d server` | FastAPI 模式，提供 API 与静态资源 | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d` | 同时启动两种模式 | 8000 |
+
+> 注意：WebUI 与 FastAPI 默认端口都是 8000，若需同时启动请设置 `WEBUI_PORT` 与 `API_PORT`。
 
 ### Docker Compose 配置
 
@@ -254,17 +261,19 @@ docker-compose -f ./docker/docker-compose.yml logs -f webui
 version: '3.8'
 
 x-common: &common
-  build: .
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
   restart: unless-stopped
   env_file:
-    - .env
+    - ../.env
   environment:
     - TZ=Asia/Shanghai
   volumes:
-    - ./data:/app/data
-    - ./logs:/app/logs
-    - ./reports:/app/reports
-    - ./.env:/app/.env
+    - ../data:/app/data
+    - ../logs:/app/logs
+    - ../reports:/app/reports
+    - ../.env:/app/.env
 
 services:
   # 定时任务模式
@@ -279,6 +288,14 @@ services:
     command: ["python", "main.py", "--webui-only"]
     ports:
       - "8000:8000"
+
+  # FastAPI 模式
+  server:
+    <<: *common
+    container_name: stock-server
+    command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
 ```
 
 ### 常用命令
@@ -289,6 +306,7 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 # 查看日志
 docker-compose -f ./docker/docker-compose.yml logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f server
 
 # 停止服务
 docker-compose -f ./docker/docker-compose.yml down
@@ -301,8 +319,9 @@ docker-compose -f ./docker/docker-compose.yml up -d webui
 ### 手动构建镜像
 
 ```bash
-docker build -t stock-analysis .
+docker build -f docker/Dockerfile -t stock-analysis .
 docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --webui-only
+docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
 ---

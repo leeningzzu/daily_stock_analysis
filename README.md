@@ -194,7 +194,7 @@ python main.py
 > 📖 完整环境变量、定时任务配置请参考 [完整配置指南](docs/full-guide.md)
 
 
-## 🖥️ 本地 WebUI（可选）
+## 🖥️ 本地 WebUI（可选 - 将在后续的版本弃用）
 
 ```bash
 python main.py --webui       # 启动 WebUI + 执行分析
@@ -204,6 +204,29 @@ python main.py --webui-only  # 仅启动 WebUI
 访问 `http://127.0.0.1:8000` 可进行配置管理、触发分析、查看任务状态。
 
 > 详细说明请参考 [完整指南 - WebUI](docs/full-guide.md#本地-webui-管理界面)
+
+## 🧩 FastAPI Web 服务（可选）
+
+![img.png](sources/fastapi_server.png)
+
+```bash
+cd ./apps/dsa-web            # 进入 React Web 目录
+npm install
+npm run build                # 编译 React Web 页面 会在根目录生成 /static 文件夹
+
+cd ../..                     # 返回项目根目录
+python main.py --serve       # 启动 FastAPI + 执行分析
+python main.py --serve-only  # 仅启动 FastAPI
+python main.py --serve-only --host 0.0.0.0 --port 8000  # 指定启动端口
+```
+
+访问 `http://127.0.0.1:8000` 即可使用该页面（注意一定要执行 `npm install` 步骤，否则没有页面）
+
+也可以使用下面命令单独启动：
+
+```bash
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
 
 ## 🗺️ Roadmap
 

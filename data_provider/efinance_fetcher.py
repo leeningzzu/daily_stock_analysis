@@ -211,8 +211,8 @@ class EfinanceFetcher(BaseFetcher):
         self._last_request_time = time.time()
     
     @retry(
-        stop=stop_after_attempt(5),  # 增加到5次
-        wait=wait_exponential(multiplier=1, min=4, max=60),  # 增加等待时间：4, 8, 16...
+        stop=stop_after_attempt(1),  # 减少到1次，避免触发限流
+        wait=wait_exponential(multiplier=1, min=4, max=60),  # 保持等待时间设置
         retry=retry_if_exception_type((
             ConnectionError,
             TimeoutError,

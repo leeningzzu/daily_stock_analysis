@@ -20,7 +20,11 @@ from dataclasses import dataclass, field
 def setup_env():
     """初始化环境变量（支持从 .env 加载）"""
     # src/config.py -> src/ -> root
-    env_path = Path(__file__).parent.parent / '.env'
+    env_file = os.getenv("ENV_FILE")
+    if env_file:
+        env_path = Path(env_file)
+    else:
+        env_path = Path(__file__).parent.parent / '.env'
     load_dotenv(dotenv_path=env_path)
 
 
@@ -431,7 +435,8 @@ class Config:
         """
         # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
         # 也能获取到最新的股票列表配置
-        env_path = Path(__file__).parent.parent / '.env'
+        env_file = os.getenv("ENV_FILE")
+        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
         stock_list_str = ''
         if env_path.exists():
             # 直接从 .env 文件读取最新的配置

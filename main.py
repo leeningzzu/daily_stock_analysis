@@ -45,13 +45,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.config import get_config, Config
-from src.feishu_doc import FeishuDocManager
 from src.logging_config import setup_logging
-from src.notification import NotificationService
-from src.core.pipeline import StockAnalysisPipeline
-from src.core.market_review import run_market_review
-from src.search_service import SearchService
-from src.analyzer import GeminiAnalyzer
 
 
 logger = logging.getLogger(__name__)
@@ -174,6 +168,33 @@ def parse_arguments() -> argparse.Namespace:
         help='不保存分析上下文快照'
     )
 
+    # === Backtest ===
+    parser.add_argument(
+        '--backtest',
+        action='store_true',
+        help='运行回测（对历史分析结果进行评估）'
+    )
+
+    parser.add_argument(
+        '--backtest-code',
+        type=str,
+        default=None,
+        help='仅回测指定股票代码'
+    )
+
+    parser.add_argument(
+        '--backtest-days',
+        type=int,
+        default=None,
+        help='回测评估窗口（交易日数，默认使用配置）'
+    )
+
+    parser.add_argument(
+        '--backtest-force',
+        action='store_true',
+        help='强制回测（即使已有回测结果也重新计算）'
+    )
+
     return parser.parse_args()
 
 
@@ -188,6 +209,9 @@ def run_full_analysis(
     这是定时任务调用的主函数
     """
     try:
+        from src.core.pipeline import StockAnalysisPipeline
+        from src.core.market_review import run_market_review
+
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
@@ -246,6 +270,8 @@ def run_full_analysis(
 
         # === 新增：生成飞书云文档 ===
         try:
+            from src.feishu_doc import FeishuDocManager
+
             feishu_doc = FeishuDocManager()
             if feishu_doc.is_configured() and (results or market_report):
                 logger.info("正在创建飞书云文档...")
@@ -277,6 +303,26 @@ def run_full_analysis(
 
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
+
+        # === Auto backtest ===
+        try:
+            if getattr(config, 'backtest_enabled', False):
+                from src.services.backtest_service import BacktestService
+
+                logger.info("开始自动回测...")
+                service = BacktestService()
+                stats = service.run_backtest(
+                    force=False,
+                    eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
+                    min_age_days=getattr(config, 'backtest_min_age_days', 14),
+                    limit=200,
+                )
+                logger.info(
+                    f"自动回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
+                    f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+                )
+        except Exception as e:
+            logger.warning(f"自动回测失败（已忽略）: {e}")
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
@@ -420,8 +466,30 @@ def main() -> int:
         return 0
 
     try:
+        # 模式0: 回测
+        if getattr(args, 'backtest', False):
+            logger.info("模式: 回测")
+            from src.services.backtest_service import BacktestService
+
+            service = BacktestService()
+            stats = service.run_backtest(
+                code=getattr(args, 'backtest_code', None),
+                force=getattr(args, 'backtest_force', False),
+                eval_window_days=getattr(args, 'backtest_days', None),
+            )
+            logger.info(
+                f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
+                f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+            )
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
+            from src.analyzer import GeminiAnalyzer
+            from src.core.market_review import run_market_review
+            from src.notification import NotificationService
+            from src.search_service import SearchService
+
             logger.info("模式: 仅大盘复盘")
             notifier = NotificationService()
             

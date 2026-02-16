@@ -34,6 +34,7 @@
 | 分析 | 多维度分析 | 技术面 + 筹码分布 + 舆情情报 + 实时行情 |
 | 市场 | 全球市场 | 支持 A股、港股、美股 |
 | 复盘 | 大盘复盘 | 每日市场概览、板块涨跌、北向资金 |
+| 图片识别 | 从图片添加 | 上传自选股截图，Vision LLM 自动提取股票代码，一键加入监控 |
 | 回测 | AI 回测验证 | 自动评估历史分析准确率，方向胜率、止盈止损命中率 |
 | 推送 | 多渠道通知 | 企业微信、飞书、Telegram、钉钉、邮件、Pushover |
 | 自动化 | 定时运行 | GitHub Actions 定时执行，无需服务器 |
@@ -50,10 +51,11 @@
 
 | 规则 | 说明 |
 |------|------|
-| 严禁追高 | 乖离率 > 5% 自动提示风险 |
+| 严禁追高 | 乖离率超阈值（默认 5%，可配置）自动提示风险；强势趋势股自动放宽 |
 | 趋势交易 | MA5 > MA10 > MA20 多头排列 |
 | 精确点位 | 买入价、止损价、目标价 |
 | 检查清单 | 每项条件以「满足 / 注意 / 不满足」标记 |
+| 新闻时效 | 可配置新闻最大时效（默认 3 天），避免使用过时信息 |
 
 ## 🚀 快速开始
 
@@ -70,16 +72,19 @@
 
 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 
-**AI 模型配置（二选一）**
+**AI 模型配置（三选一，至少配置一个）**
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | ✅* |
+| `ANTHROPIC_API_KEY` | [Anthropic Claude](https://console.anthropic.com/) API Key | 可选 |
+| `ANTHROPIC_MODEL` | Claude 模型（如 `claude-3-5-sonnet-20241022`） | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com/v1`） | 可选 |
 | `OPENAI_MODEL` | 模型名称（如 `deepseek-chat`） | 可选 |
+| `OPENAI_VISION_MODEL` | 图片识别专用模型（部分第三方模型不支持图像；不填则用 `OPENAI_MODEL`） | 可选 |
 
-> 注：`GEMINI_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
+> 注：AI 优先级 Gemini > Anthropic > OpenAI，至少配置一个。图片识别需 Vision 能力模型，每次调用消耗 API 额度。
 
 <details>
 <summary><b>通知渠道配置</b>（点击展开，至少配置一个）</summary>
@@ -96,13 +101,17 @@
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
 | `EMAIL_SENDER_NAME` | 邮件发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 股票分组发往不同邮箱（如 `STOCK_GROUP_1=600519,300750` `EMAIL_GROUP_1=user1@example.com`） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS 证书校验（默认 true）。设为 false 可支持自签名证书。警告：关闭有严重安全风险，仅限可信内网 | 可选 |
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
 | `REPORT_TYPE` | 报告类型：`simple`(精简) 或 `full`(完整)，Docker环境推荐设为 `full` | 可选 |
+| `REPORT_SUMMARY_ONLY` | 仅分析结果摘要：设为 `true` 时只推送汇总，不含个股详情 | 可选 |
 | `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
+| `MERGE_EMAIL_NOTIFICATION` | 个股与大盘复盘合并推送（默认 false），减少邮件数量 | 可选 |
 
 > 至少配置一个渠道，配置多个则同时推送。更多配置请参考 [完整指南](docs/full-guide.md)
 
@@ -119,6 +128,8 @@
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `WECHAT_MSG_TYPE` | 企微消息类型，默认 markdown，支持配置 text 类型，发送纯 markdown 文本 | 可选 |
+| `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），默认 3，避免使用过时信息 | 可选 |
+| `BIAS_THRESHOLD` | 乖离率阈值（%），默认 5.0，超过提示不追高；强势趋势股自动放宽 | 可选 |
 
 #### 3. 启用 Actions
 
@@ -209,6 +220,16 @@ python main.py
 
 包含完整的配置管理、任务监控和手动分析功能。
 
+### 从图片添加股票
+
+在 **设置 → 基础设置** 中找到「从图片添加」区块，拖拽或选择自选股截图（如 APP 持仓页、行情列表截图），系统会通过 Vision AI 自动识别股票代码并合并到自选列表。
+
+**配置与限制**：
+- 需配置 `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 中至少一个（Vision 能力模型）
+- 支持 JPG、PNG、WebP、GIF，单张最大 5MB；请求超时 60 秒
+
+**API 调用**：`POST /api/v1/stocks/extract-from-image`，表单字段 `file`，返回 `{ "codes": ["600519", "300750", ...] }`。详见 [完整指南](docs/full-guide.md)。
+
 ### 启动方式
 
 1. **编译前端** (首次运行需要)
@@ -253,6 +274,23 @@ python main.py
 欢迎提交 Issue 和 Pull Request！
 
 详见 [贡献指南](docs/CONTRIBUTING.md)
+
+### 本地门禁（建议先跑）
+
+```bash
+pip install -r requirements.txt
+pip install flake8 pytest
+./scripts/ci_gate.sh
+```
+
+如修改前端（`apps/dsa-web`）：
+
+```bash
+cd apps/dsa-web
+npm ci
+npm run lint
+npm run build
+```
 
 ## 📄 License
 [MIT License](LICENSE) © 2026 ZhuLinsen

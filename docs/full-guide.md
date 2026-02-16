@@ -84,6 +84,7 @@ daily_stock_analysis/
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS 证书校验（默认 true）。设为 false 可支持自签名证书。警告：关闭有严重安全风险（MITM），仅限可信内网 | 可选 |
 
 > *注：至少配置一个渠道，配置多个则同时推送
 
@@ -93,7 +94,11 @@ daily_stock_analysis/
 |------------|------|:----:|
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
 | `REPORT_TYPE` | 报告类型：`simple`(精简) 或 `full`(完整)，Docker环境推荐设为 `full` | 可选 |
+| `REPORT_SUMMARY_ONLY` | 仅分析结果摘要：设为 `true` 时只推送汇总，不含个股详情；多股时适合快速浏览（默认 false，Issue #262） | 可选 |
 | `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
+| `MERGE_EMAIL_NOTIFICATION` | 个股与大盘复盘合并推送（默认 false），减少邮件数量、降低垃圾邮件风险；与 `SINGLE_STOCK_NOTIFY` 互斥（单股模式下合并不生效） | 可选 |
+| `MARKDOWN_TO_IMAGE_CHANNELS` | 将 Markdown 转为图片发送的渠道（用逗号分隔）：telegram,wechat,custom,email，需安装 wkhtmltopdf | 可选 |
+| `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 15000） | 可选 |
 
 #### 其他配置
 
@@ -149,8 +154,12 @@ daily_stock_analysis/
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | - | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | - | 可选 |
 | `OPENAI_MODEL` | OpenAI 模型名称 | `gpt-4o` | 可选 |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | 可选 |
+| `ANTHROPIC_MODEL` | Claude 模型名称 | `claude-3-5-sonnet-20241022` | 可选 |
+| `ANTHROPIC_TEMPERATURE` | Claude 温度参数（0.0-1.0） | `0.7` | 可选 |
+| `ANTHROPIC_MAX_TOKENS` | Claude 响应最大 token 数 | `8192` | 可选 |
 
-> *注：`GEMINI_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
+> *注：`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
 
 ### 通知渠道配置
 
@@ -168,8 +177,10 @@ daily_stock_analysis/
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（逗号分隔，留空发给自己） | 可选 |
 | `EMAIL_SENDER_NAME` | 发件人显示名称 | 可选 |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 股票分组发往不同邮箱（Issue #268），如 `STOCK_GROUP_1=600519,300750` 与 `EMAIL_GROUP_1=user1@example.com` 配对 | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook Bearer Token | 可选 |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS 证书校验（默认 true）。设为 false 可支持自签名。警告：关闭有严重安全风险 | 可选 |
 | `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
 | `PUSHOVER_API_TOKEN` | Pushover API Token | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（国内推送服务） | 可选 |
@@ -197,6 +208,8 @@ daily_stock_analysis/
 | `BOCHA_API_KEYS` | 博查搜索 API Key（中文优化） | 可选 |
 | `BRAVE_API_KEYS` | Brave Search API Key（美股优化） | 可选 |
 | `SERPAPI_API_KEYS` | SerpAPI 备用搜索 | 可选 |
+| `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
+| `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
 
 ### 数据源配置
 
@@ -209,6 +222,7 @@ daily_stock_analysis/
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `STOCK_LIST` | 自选股代码（逗号分隔） | - |
+| `TRUST_X_FORWARDED_FOR` | 反向代理部署时设为 `true`，从 `X-Forwarded-For` 获取真实 IP（限流等）；直连公网时保持 `false` 防伪造 | `false` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
@@ -370,11 +384,40 @@ schedule:
 
 ### 本地定时任务
 
+内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。
+
+#### 命令行方式
+
 ```bash
-# 启动定时模式（默认 18:00 执行）
+# 启动定时模式（启动时立即执行一次，随后每天 18:00 执行）
 python main.py --schedule
 
-# 或使用 crontab
+# 启动定时模式（启动时不执行，仅等待下次定时触发）
+python main.py --schedule --no-run-immediately
+```
+
+#### 环境变量方式
+
+你也可以通过环境变量配置定时行为（适用于 Docker 或 .env）：
+
+| 变量名 | 说明 | 默认值 | 示例 |
+|--------|------|:-------:|:-----:|
+| `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
+| `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
+| `SCHEDULE_RUN_IMMEDIATELY` | 启动服务时是否立即运行一次 | `true` | `false` |
+
+例如在 Docker 中配置：
+
+```bash
+# 设置启动时不立即分析
+docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
+```
+
+#### 使用 Crontab
+
+如果不想使用常驻进程，也可以使用系统的 Cron：
+
+```bash
 crontab -e
 # 添加：0 18 * * 1-5 cd /path/to/project && python main.py
 ```
@@ -413,6 +456,16 @@ crontab -e
 - QQ 邮箱：smtp.qq.com:465
 - 163 邮箱：smtp.163.com:465
 - Gmail：smtp.gmail.com:587
+
+**股票分组发往不同邮箱**（Issue #268，可选）：
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。大盘复盘会发往所有配置的邮箱。
+
+```bash
+STOCK_GROUP_1=600519,300750
+EMAIL_GROUP_1=user1@example.com
+STOCK_GROUP_2=002594,AAPL
+EMAIL_GROUP_2=user2@example.com
+```
 
 ### 自定义 Webhook
 
@@ -471,6 +524,19 @@ PUSHOVER_API_TOKEN=your_api_token
 - 支持通知优先级和声音设置
 - 免费额度足够个人使用（每月 10,000 条）
 - 消息可保留 7 天
+
+### Markdown 转图片（可选）
+
+配置 `MARKDOWN_TO_IMAGE_CHANNELS` 可将报告以图片形式发送至不支持 Markdown 的渠道（telegram, wechat, custom, email）。
+
+**依赖安装**：
+
+1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
+2. **wkhtmltopdf**：系统级依赖，需手动安装：
+   - **macOS**：`brew install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+
+未安装或安装失败时，将自动回退为 Markdown 文本发送。
 
 ---
 
@@ -615,6 +681,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
 | `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
 | `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
+| `/api/v1/stocks/extract-from-image` | POST | 从图片提取股票代码（multipart，超时 60s） |
 | `/api/health` | GET | 健康检查 |
 | `/docs` | GET | API Swagger 文档 |
 

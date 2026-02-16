@@ -907,6 +907,7 @@ class SearchService:
         tavily_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
+        news_max_age_days: int = 3,
     ):
         """
         初始化搜索服务
@@ -916,8 +917,10 @@ class SearchService:
             tavily_keys: Tavily API Key 列表
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
+            news_max_age_days: 新闻最大时效（天）
         """
         self._providers: List[BaseSearchProvider] = []
+        self.news_max_age_days = max(1, news_max_age_days)
 
         # 初始化搜索引擎（按优先级排序）
         # 1. Bocha 优先（中文搜索优化，AI摘要）
@@ -1027,13 +1030,15 @@ class SearchService:
         # 1. 周二至周五：搜索近1天（24小时）
         # 2. 周六、周日：搜索近2-3天（覆盖周末）
         # 3. 周一：搜索近3天（覆盖周末）
+        # 4. 用 NEWS_MAX_AGE_DAYS 限制上限
         today_weekday = datetime.now().weekday()
-        if today_weekday == 0: # 周一
-            search_days = 3
-        elif today_weekday >= 5: # 周六(5)、周日(6)
-            search_days = 2
-        else: # 周二(1) - 周五(4)
-            search_days = 1
+        if today_weekday == 0:  # 周一
+            weekday_days = 3
+        elif today_weekday >= 5:  # 周六(5)、周日(6)
+            weekday_days = 2
+        else:  # 周二(1) - 周五(4)
+            weekday_days = 1
+        search_days = min(weekday_days, self.news_max_age_days)
 
         # 构建搜索查询（优化搜索效果）
         is_foreign = self._is_foreign_stock(stock_code)
@@ -1233,7 +1238,7 @@ class SearchService:
             
             logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
             
-            response = provider.search(dim['query'], max_results=3)
+            response = provider.search(dim['query'], max_results=3, days=self.news_max_age_days)
             results[dim['name']] = response
             search_count += 1
             
@@ -1516,6 +1521,7 @@ def get_search_service() -> SearchService:
             tavily_keys=config.tavily_api_keys,
             brave_keys=config.brave_api_keys,
             serpapi_keys=config.serpapi_keys,
+            news_max_age_days=config.news_max_age_days,
         )
     
     return _search_service

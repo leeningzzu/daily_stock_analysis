@@ -5,6 +5,69 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 优化
+- 🔒 **CI 门禁统一（P0）**
+  - 新增 `scripts/ci_gate.sh` 作为后端门禁单一入口
+  - 主 CI 改为 `backend-gate`、`docker-build`、`web-gate` 三段式
+  - CI 触发改为所有 PR，避免 Required Checks 因路径过滤缺失而卡住合并
+  - `web-gate` 支持前端路径变更按需触发
+  - 新增 `network-smoke` 工作流承载非阻断网络场景回归（`pytest -m network` + `test.sh quick`）
+- 🔍 **PR 审查门槛收紧（P0）**
+  - `pr-review` 中 flake8 严重错误改为阻断，不再仅告警
+- 📦 **发布链路收敛（P0）**
+  - `docker-publish` 调整为 tag 主触发，并增加发布前门禁校验
+  - 手动发布增加 `release_tag` 输入与 semver/changelog 强校验，避免绕过版本规范
+  - 发布前新增 `README.md` 和 `docs/CHANGELOG.md` 校验
+  - 发布前新增 Docker smoke（关键模块导入）
+- 📝 **PR 模板升级（P0）**
+  - 增加背景、范围、验证命令与结果、回滚方案、Issue 关联等必填项
+- 🤖 **AI 审查覆盖增强（P0）**
+  - `pr-review` 将 `.github/workflows/**` 与 `.github/scripts/**` 纳入可审查范围
+  - 修复自动标签步骤在 `pull_request_target` 事件下不执行的问题
+  - 新增 `AI_REVIEW_STRICT` 开关，可选将 AI 审查失败升级为阻断
+
+### 新增
+- 📊 **仅分析结果摘要** (Issue #262)
+  - 支持 `REPORT_SUMMARY_ONLY` 环境变量，设为 `true` 时只推送汇总，不含个股详情
+  - 默认 `false`，多股时适合快速浏览
+- **新闻时效性与乖离率优化** (Issue #296)
+  - `NEWS_MAX_AGE_DAYS`：新闻最大时效（天），默认 3，避免使用过时信息
+  - `BIAS_THRESHOLD`：乖离率阈值（%），默认 5.0，可配置
+  - 强势趋势股（多头排列且趋势强度 ≥70）自动放宽乖离率到 1.5 倍，避免错杀 LITE/SNDK 等趋势股
+  - AI System Prompt 增加 PE 估值关注和强势趋势放宽软性引导
+- 📷 **Markdown 转图片** (Issue #289)
+  - 支持 `MARKDOWN_TO_IMAGE_CHANNELS` 配置，对 Telegram、企业微信、自定义 Webhook（Discord）、邮件以图片形式发送报告
+  - 邮件为内联附件，增强对不支持 HTML 客户端的兼容性
+  - 需安装 `wkhtmltopdf` 和 `imgkit`
+- 🤖 **Anthropic Claude API 支持** (Issue #257)
+  - 支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL`、`ANTHROPIC_TEMPERATURE`、`ANTHROPIC_MAX_TOKENS` 环境变量
+  - AI 分析优先级：Gemini > Anthropic > OpenAI
+- 📷 **从图片识别股票代码** (Issue #257)
+  - 上传自选股截图，通过 Vision LLM 自动提取股票代码
+  - 设置页「基础设置」中新增「从图片添加」区块
+  - API: `POST /api/v1/stocks/extract-from-image`（表单字段 `file`）
+  - 支持 JPEG/PNG/WebP/GIF，最大 5MB
+  - 支持 `OPENAI_VISION_MODEL` 单独配置图片识别模型（部分第三方模型不支持图像）
+- ⚙️ **通达信数据源手动配置** (Issue #257)
+  - 支持 `PYTDX_HOST`、`PYTDX_PORT` 或 `PYTDX_SERVERS` 配置自建通达信服务器
+- 🔐 **Webhook 证书校验开关** (Issue #265)
+  - 支持 `WEBHOOK_VERIFY_SSL` 环境变量，可关闭 HTTPS 证书校验以支持自签名证书
+  - 默认保持校验，关闭存在 MITM 风险，仅建议在可信内网使用
+- 📧 **股票分组发往不同邮箱** (Issue #268)
+  - 支持 `STOCK_GROUP_N` + `EMAIL_GROUP_N` 配置，不同股票组报告发送到对应邮箱
+  - 大盘复盘发往所有配置的邮箱
+- 📧 **个股与大盘复盘合并推送** (Issue #190)
+  - 支持 `MERGE_EMAIL_NOTIFICATION` 环境变量，设为 `true` 时将个股分析和大盘复盘合并为一次推送
+  - 默认 `false`，减少邮件数量、降低被识别为垃圾邮件的风险
+
+### 优化
+- 图片识别 API 仅保留 `file` 表单字段，移除 `image` 字段以统一接口
+- 图片识别 Vision API 超时 60 秒，前端请求超时 60 秒
+- 配置冲突（409）时自动刷新并提示用户再次合并
+- 请求超时/超频时展示专属错误提示
+
 ## [3.0.5] - 2026-02-08
 
 ### 修复

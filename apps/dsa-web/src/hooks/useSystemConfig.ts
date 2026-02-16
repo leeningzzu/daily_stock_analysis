@@ -323,6 +323,7 @@ export function useSystemConfig() {
   return {
     // Server state
     configVersion,
+    maskToken,
     serverItems,
     categories,
     itemsByCategory,

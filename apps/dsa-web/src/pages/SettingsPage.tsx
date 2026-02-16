@@ -1,7 +1,12 @@
 import type React from 'react';
 import { useEffect } from 'react';
 import { useSystemConfig } from '../hooks';
-import { SettingsAlert, SettingsField, SettingsLoading } from '../components/settings';
+import {
+  ImageStockExtractor,
+  SettingsAlert,
+  SettingsField,
+  SettingsLoading,
+} from '../components/settings';
 import { getCategoryDescriptionZh, getCategoryTitleZh } from '../utils/systemConfigI18n';
 
 const SettingsPage: React.FC = () => {
@@ -24,6 +29,8 @@ const SettingsPage: React.FC = () => {
     retry,
     save,
     setDraftValue,
+    configVersion,
+    maskToken,
   } = useSystemConfig();
 
   useEffect(() => {
@@ -129,6 +136,19 @@ const SettingsPage: React.FC = () => {
           </aside>
 
           <section className="space-y-3 rounded-2xl border border-white/8 bg-card/60 p-4 backdrop-blur-sm">
+            {activeCategory === 'base' ? (
+              <div className="space-y-3">
+                <ImageStockExtractor
+                  stockListValue={
+                    (activeItems.find((i) => i.key === 'STOCK_LIST')?.value as string) ?? ''
+                  }
+                  configVersion={configVersion}
+                  maskToken={maskToken}
+                  onMerged={() => void load()}
+                  disabled={isSaving || isLoading}
+                />
+              </div>
+            ) : null}
             {activeItems.length ? (
               activeItems.map((item) => (
                 <SettingsField

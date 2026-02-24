@@ -22,6 +22,8 @@ from itertools import cycle
 import requests
 from newspaper import Article, Config
 
+from data_provider.us_index_mapping import is_us_index_code
+
 logger = logging.getLogger(__name__)
 
 
@@ -967,6 +969,31 @@ class SearchService:
             return True
         return False
 
+    # A-share ETF code prefixes (Shanghai 51/52/56/58, Shenzhen 15/16/18)
+    _A_ETF_PREFIXES = ('51', '52', '56', '58', '15', '16', '18')
+    _ETF_NAME_KEYWORDS = ('ETF', 'FUND', 'TRUST', 'INDEX', 'TRACKER', 'UNIT')  # US/HK ETF name hints
+
+    @staticmethod
+    def is_index_or_etf(stock_code: str, stock_name: str) -> bool:
+        """
+        Judge if symbol is index-tracking ETF or market index.
+        For such symbols, analysis focuses on index movement only, not issuer company risks.
+        """
+        code = (stock_code or '').strip().split('.')[0]
+        if not code:
+            return False
+        # A-share ETF
+        if code.isdigit() and len(code) == 6 and code.startswith(SearchService._A_ETF_PREFIXES):
+            return True
+        # US index (SPX, DJI, IXIC etc.)
+        if is_us_index_code(code):
+            return True
+        # US/HK ETF: foreign symbol + name contains fund-like keywords
+        if SearchService._is_foreign_stock(code):
+            name_upper = (stock_name or '').upper()
+            return any(kw in name_upper for kw in SearchService._ETF_NAME_KEYWORDS)
+        return False
+
     @property
     def is_available(self) -> bool:
         """检查是否有可用的搜索引擎"""
@@ -1157,66 +1184,43 @@ class SearchService:
         """
         results = {}
         search_count = 0
-        
-        # 根据股票类型选择搜索关键词语言
-        is_foreign = self._is_foreign_stock(stock_code)
 
-        # 定义搜索维度
+        is_foreign = self._is_foreign_stock(stock_code)
+        is_index_etf = self.is_index_or_etf(stock_code, stock_name)
+
         if is_foreign:
             search_dimensions = [
-                {
-                    'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} latest news events",
-                    'desc': '最新消息'
-                },
-                {
-                    'name': 'market_analysis',
-                    'query': f"{stock_name} analyst rating target price report",
-                    'desc': '机构分析'
-                },
-                {
-                    'name': 'risk_check',
-                    'query': f"{stock_name} risk insider selling lawsuit litigation",
-                    'desc': '风险排查'
-                },
-                {
-                    'name': 'earnings',
-                    'query': f"{stock_name} earnings revenue profit growth forecast",
-                    'desc': '业绩预期'
-                },
-                {
-                    'name': 'industry',
-                    'query': f"{stock_name} industry competitors market share outlook",
-                    'desc': '行业分析'
-                },
+                {'name': 'latest_news', 'query': f"{stock_name} {stock_code} latest news events", 'desc': '最新消息'},
+                {'name': 'market_analysis', 'query': f"{stock_name} analyst rating target price report", 'desc': '机构分析'},
+                {'name': 'risk_check', 'query': (
+                    f"{stock_name} {stock_code} index performance outlook tracking error"
+                    if is_index_etf else f"{stock_name} risk insider selling lawsuit litigation"
+                ), 'desc': '风险排查'},
+                {'name': 'earnings', 'query': (
+                    f"{stock_name} {stock_code} index performance composition outlook"
+                    if is_index_etf else f"{stock_name} earnings revenue profit growth forecast"
+                ), 'desc': '业绩预期'},
+                {'name': 'industry', 'query': (
+                    f"{stock_name} {stock_code} index sector allocation holdings"
+                    if is_index_etf else f"{stock_name} industry competitors market share outlook"
+                ), 'desc': '行业分析'},
             ]
         else:
             search_dimensions = [
-                {
-                    'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} 最新 新闻 重大 事件",
-                    'desc': '最新消息'
-                },
-                {
-                    'name': 'market_analysis',
-                    'query': f"{stock_name} 研报 目标价 评级 深度分析",
-                    'desc': '机构分析'
-                },
-                {
-                    'name': 'risk_check',
-                    'query': f"{stock_name} 减持 处罚 违规 诉讼 利空 风险",
-                    'desc': '风险排查'
-                },
-                {
-                    'name': 'earnings',
-                    'query': f"{stock_name} 业绩预告 财报 营收 净利润 同比增长",
-                    'desc': '业绩预期'
-                },
-                {
-                    'name': 'industry',
-                    'query': f"{stock_name} 所在行业 竞争对手 市场份额 行业前景",
-                    'desc': '行业分析'
-                },
+                {'name': 'latest_news', 'query': f"{stock_name} {stock_code} 最新 新闻 重大 事件", 'desc': '最新消息'},
+                {'name': 'market_analysis', 'query': f"{stock_name} 研报 目标价 评级 深度分析", 'desc': '机构分析'},
+                {'name': 'risk_check', 'query': (
+                    f"{stock_name} 指数走势 跟踪误差 净值 表现"
+                    if is_index_etf else f"{stock_name} 减持 处罚 违规 诉讼 利空 风险"
+                ), 'desc': '风险排查'},
+                {'name': 'earnings', 'query': (
+                    f"{stock_name} 指数成分 净值 跟踪表现"
+                    if is_index_etf else f"{stock_name} 业绩预告 财报 营收 净利润 同比增长"
+                ), 'desc': '业绩预期'},
+                {'name': 'industry', 'query': (
+                    f"{stock_name} 指数成分股 行业配置 权重"
+                    if is_index_etf else f"{stock_name} 所在行业 竞争对手 市场份额 行业前景"
+                ), 'desc': '行业分析'},
             ]
         
         logger.info(f"开始多维度情报搜索: {stock_name}({stock_code})")

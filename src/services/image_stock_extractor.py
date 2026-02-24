@@ -198,6 +198,8 @@ def _call_openai(image_b64: str, mime_type: str) -> str:
     client_kwargs = {"api_key": cfg.openai_api_key, "timeout": VISION_API_TIMEOUT}
     if cfg.openai_base_url and cfg.openai_base_url.startswith("http"):
         client_kwargs["base_url"] = cfg.openai_base_url
+    if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
+        client_kwargs["default_headers"] = {"APP-Code": "GPIJ3886"}
     client = OpenAI(**client_kwargs)
     # 使用 Vision 专用模型（若配置），否则用 openai_model（部分第三方模型不支持图像）
     model = (cfg.openai_vision_model or cfg.openai_model or "gpt-4o-mini").strip() or "gpt-4o-mini"

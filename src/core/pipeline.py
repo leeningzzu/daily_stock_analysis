@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 from src.config import get_config, Config
@@ -207,21 +207,33 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 获取筹码分布失败: {e}")
             
+            # If agent mode is enabled, or specific agent skills are configured, use the Agent analysis pipeline
+            use_agent = getattr(self.config, 'agent_mode', False)
+            if not use_agent:
+                # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
+                configured_skills = getattr(self.config, 'agent_skills', [])
+                if configured_skills and configured_skills != ['all']:
+                    use_agent = True
+                    logger.info(f"[{code}] Auto-enabled agent mode due to configured skills: {configured_skills}")
+
+            if use_agent:
+                logger.info(f"[{code}] 启用 Agent 模式进行分析")
+                return self._analyze_with_agent(code, report_type, query_id, stock_name, realtime_quote, chip_data)
+            
             # Step 3: 趋势分析（基于交易理念）
             trend_result: Optional[TrendAnalysisResult] = None
             try:
-                # 获取历史数据进行趋势分析
-                context = self.db.get_analysis_context(code)
-                if context and 'raw_data' in context:
-                    import pandas as pd
-                    raw_data = context['raw_data']
-                    if isinstance(raw_data, list) and len(raw_data) > 0:
-                        df = pd.DataFrame(raw_data)
-                        trend_result = self.trend_analyzer.analyze(df, code)
-                        logger.info(f"[{code}] 趋势分析: {trend_result.trend_status.value}, "
-                                  f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
+                import pandas as pd
+                end_date = date.today()
+                start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
+                historical_bars = self.db.get_data_range(code, start_date, end_date)
+                if historical_bars:
+                    df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                    trend_result = self.trend_analyzer.analyze(df, code)
+                    logger.info(f"[{code}] 趋势分析: {trend_result.trend_status.value}, "
+                              f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
             except Exception as e:
-                logger.warning(f"[{code}] 趋势分析失败: {e}")
+                logger.warning(f"[{code}] 趋势分析失败: {e}", exc_info=True)
             
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
@@ -267,7 +279,6 @@ class StockAnalysisPipeline:
             
             if context is None:
                 logger.warning(f"[{code}] 无法获取历史行情数据，将仅基于新闻和实时行情分析")
-                from datetime import date
                 context = {
                     'code': code,
                     'stock_name': stock_name,
@@ -400,8 +411,124 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
-        
+
+        # ETF/index flag for analyzer prompt (Fixes #274)
+        enhanced['is_index_etf'] = SearchService.is_index_or_etf(
+            context.get('code', ''), enhanced.get('stock_name', stock_name)
+        )
+
         return enhanced
+
+    def _analyze_with_agent(
+        self, 
+        code: str, 
+        report_type: ReportType, 
+        query_id: str,
+        stock_name: str,
+        realtime_quote: Any,
+        chip_data: Optional[ChipDistribution]
+    ) -> Optional[AnalysisResult]:
+        """
+        使用 Agent 模式分析单只股票。
+        """
+        try:
+            from src.agent.factory import build_agent_executor
+
+            # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
+            executor = build_agent_executor(self.config, getattr(self.config, 'agent_skills', None) or None)
+
+            # Build initial context to avoid redundant tool calls
+            initial_context = {
+                "stock_code": code,
+                "stock_name": stock_name,
+                "report_type": report_type.value,
+            }
+            
+            if realtime_quote:
+                initial_context["realtime_quote"] = self._safe_to_dict(realtime_quote)
+            if chip_data:
+                initial_context["chip_distribution"] = self._safe_to_dict(chip_data)
+
+            # 运行 Agent
+            message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
+            agent_result = executor.run(message, context=initial_context)
+
+            # 转换为 AnalysisResult
+            result = self._agent_result_to_analysis_result(agent_result, code, stock_name, report_type, query_id)
+
+            # 保存分析历史记录
+            if result:
+                try:
+                    self.db.save_analysis_history(
+                        result=result,
+                        query_id=query_id,
+                        report_type=report_type.value,
+                        news_content=None,
+                        context_snapshot=initial_context,
+                        save_snapshot=self.save_context_snapshot
+                    )
+                except Exception as e:
+                    logger.warning(f"[{code}] 保存 Agent 分析历史失败: {e}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[{code}] Agent 分析失败: {e}")
+            logger.exception(f"[{code}] Agent 详细错误信息:")
+            return None
+
+    def _agent_result_to_analysis_result(
+        self, agent_result, code: str, stock_name: str, report_type: ReportType, query_id: str
+    ) -> AnalysisResult:
+        """
+        将 AgentResult 转换为 AnalysisResult。
+        """
+        result = AnalysisResult(
+            code=code,
+            name=stock_name,
+            sentiment_score=50,
+            trend_prediction="未知",
+            operation_advice="观望",
+            success=agent_result.success,
+            error_message=agent_result.error if not agent_result.success else None,
+            data_sources=f"agent:{agent_result.provider}"
+        )
+
+        if agent_result.success and agent_result.dashboard:
+            dash = agent_result.dashboard
+            result.sentiment_score = self._safe_int(dash.get("sentiment_score"), 50)
+            result.trend_prediction = dash.get("trend_prediction", "未知")
+            result.operation_advice = dash.get("operation_advice", "观望")
+            result.decision_type = dash.get("decision_type", "hold")
+            result.analysis_summary = dash.get("analysis_summary", "")
+            # The AI returns a top-level dict that contains a nested 'dashboard' sub-key
+            # with core_conclusion / battle_plan / intelligence.  AnalysisResult's helper
+            # methods (get_sniper_points, get_core_conclusion, etc.) expect that inner
+            # structure, so we unwrap it here.
+            result.dashboard = dash.get("dashboard") or dash
+        else:
+            result.sentiment_score = 50
+            result.operation_advice = "观望"
+            if not result.error_message:
+                result.error_message = "Agent 未能生成有效的决策仪表盘"
+
+        return result
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 50) -> int:
+        """安全地将值转换为整数。"""
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            import re
+            match = re.search(r'-?\d+', value)
+            if match:
+                return int(match.group())
+        return default
     
     def _describe_volume_ratio(self, volume_ratio: float) -> str:
         """

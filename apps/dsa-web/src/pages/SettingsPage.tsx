@@ -1,7 +1,8 @@
 import type React from 'react';
 import { useEffect } from 'react';
-import { useSystemConfig } from '../hooks';
+import { useAuth, useSystemConfig } from '../hooks';
 import {
+  ChangePasswordCard,
   ImageStockExtractor,
   SettingsAlert,
   SettingsField,
@@ -10,6 +11,7 @@ import {
 import { getCategoryDescriptionZh, getCategoryTitleZh } from '../utils/systemConfigI18n';
 
 const SettingsPage: React.FC = () => {
+  const { passwordChangeable } = useAuth();
   const {
     categories,
     itemsByCategory,
@@ -147,6 +149,11 @@ const SettingsPage: React.FC = () => {
                   onMerged={() => void load()}
                   disabled={isSaving || isLoading}
                 />
+              </div>
+            ) : null}
+            {activeCategory === 'system' && passwordChangeable ? (
+              <div className="space-y-3">
+                <ChangePasswordCard />
               </div>
             ) : null}
             {activeItems.length ? (

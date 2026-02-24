@@ -44,6 +44,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
 
@@ -446,10 +447,10 @@ def main() -> int:
     for warning in warnings:
         logger.warning(warning)
 
-    # 解析股票列表
+    # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
-        stock_codes = [code.strip() for code in args.stocks.split(',') if code.strip()]
+        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
@@ -581,7 +582,10 @@ def main() -> int:
             return 0
 
         # 模式3: 正常单次运行
-        run_full_analysis(config, args, stock_codes)
+        if config.run_immediately:
+            run_full_analysis(config, args, stock_codes)
+        else:
+            logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 
         logger.info("\n程序执行完成")
 

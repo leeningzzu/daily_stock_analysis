@@ -209,6 +209,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `STOCK_LIST` | Watchlist codes (comma-separated) | - |
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
+| `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), us (US stocks), both | `cn` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
 | `LOG_DIR` | Log directory | `./logs` |
@@ -487,6 +488,7 @@ System defaults to AkShare (free), also supports other data sources:
 ### YFinance
 - Free, no configuration needed
 - Supports US/HK stock data
+- US stock historical and real-time data both use YFinance exclusively to avoid technical indicator errors from akshare's US stock adjustment issues
 
 ---
 

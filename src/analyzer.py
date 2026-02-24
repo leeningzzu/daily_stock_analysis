@@ -622,6 +622,8 @@ class GeminiAnalyzer:
             client_kwargs = {"api_key": config.openai_api_key}
             if config.openai_base_url and config.openai_base_url.startswith('http'):
                 client_kwargs["base_url"] = config.openai_base_url
+            if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
+                client_kwargs["default_headers"] = {"APP-Code": "GPIJ3886"}
 
             self._openai_client = OpenAI(**client_kwargs)
             self._current_model_name = config.openai_model
@@ -1298,7 +1300,17 @@ class GeminiAnalyzer:
 ## ✅ 分析任务
 
 请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
+"""
+        if context.get('is_index_etf'):
+            prompt += """
+> ⚠️ **指数/ETF 分析约束**：该标的为指数跟踪型 ETF 或市场指数。
+> - 风险分析仅关注：**指数走势、跟踪误差、市场流动性**
+> - 严禁将基金公司的诉讼、声誉、高管变动纳入风险警报
+> - 业绩预期基于**指数成分股整体表现**，而非基金公司财报
+> - `risk_alerts` 中不得出现基金管理人相关的公司经营风险
 
+"""
+        prompt += f"""
 ### ⚠️ 重要：股票名称确认
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 

@@ -60,7 +60,7 @@ daily_stock_analysis/
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | ✅* |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com/v1`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `deepseek-chat`） | 可选 |
+| `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-chat`、`gpt-5.2`） | 可选 |
 
 > *注：`GEMINI_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
 
@@ -115,7 +115,7 @@ daily_stock_analysis/
 
 如果你想快速开始，最少需要配置以下项：
 
-1. **AI 模型**：`GEMINI_API_KEY`（推荐）或 `OPENAI_API_KEY`
+1. **AI 模型**：`AIHUBMIX_KEY`（[AIHubmix](https://aihubmix.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
 2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
 3. **股票列表**：`STOCK_LIST`（必填）
 4. **搜索 API**：`TAVILY_API_KEYS`（强烈推荐，用于新闻搜索）
@@ -148,18 +148,19 @@ daily_stock_analysis/
 
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
-| `GEMINI_API_KEY` | Google Gemini API Key | - | ✅* |
+| `AIHUBMIX_KEY` | [AIHubmix](https://aihubmix.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，无需额外配置 Base URL | - | 可选 |
+| `GEMINI_API_KEY` | Google Gemini API Key | - | 可选 |
 | `GEMINI_MODEL` | 主模型名称 | `gemini-3-flash-preview` | 否 |
 | `GEMINI_MODEL_FALLBACK` | 备选模型 | `gemini-2.5-flash` | 否 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | - | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | - | 可选 |
-| `OPENAI_MODEL` | OpenAI 模型名称 | `gpt-4o` | 可选 |
+| `OPENAI_MODEL` | OpenAI 模型名称（AIHubmix 用户可填如 `gemini-3.1-pro-preview`、`gemini-3-flash-preview`、`gpt-5.2`） | `gpt-5.2` | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | 可选 |
 | `ANTHROPIC_MODEL` | Claude 模型名称 | `claude-3-5-sonnet-20241022` | 可选 |
 | `ANTHROPIC_TEMPERATURE` | Claude 温度参数（0.0-1.0） | `0.7` | 可选 |
 | `ANTHROPIC_MAX_TOKENS` | Claude 响应最大 token 数 | `8192` | 可选 |
 
-> *注：`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
+> *注：`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个。`AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
 
 ### 通知渠道配置
 
@@ -222,9 +223,11 @@ daily_stock_analysis/
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `STOCK_LIST` | 自选股代码（逗号分隔） | - |
+| `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password` | `false` |
 | `TRUST_X_FORWARDED_FOR` | 反向代理部署时设为 `true`，从 `X-Forwarded-For` 获取真实 IP（限流等）；直连公网时保持 `false` 防伪造 | `false` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
+| `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户 | `cn` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |
@@ -560,6 +563,7 @@ PUSHOVER_API_TOKEN=your_api_token
 ### YFinance
 - 免费，无需配置
 - 支持美股/港股数据
+- 美股历史数据与实时行情均统一使用 YFinance，以避免 akshare 美股复权异常导致的技术指标错误
 
 ---
 
@@ -572,6 +576,10 @@ PUSHOVER_API_TOKEN=your_api_token
 ```bash
 STOCK_LIST=600519,hk00700,hk01810
 ```
+
+### ETF 与指数分析
+
+针对指数跟踪型 ETF 和美股指数（如 VOO、QQQ、SPY、510050、SPX、DJI、IXIC），分析仅关注**指数走势、跟踪误差、市场流动性**，不纳入基金管理人/发行方的公司层面风险（诉讼、声誉、高管变动等）。风险警报与业绩预期均基于指数成分股整体表现，避免将基金公司新闻误判为标的本身利空。详见 Issue #274。
 
 ### 多模型切换
 
@@ -732,6 +740,8 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 |------|------|------|
 | A股 | 6位数字 | `600519`、`000001`、`300750` |
 | 港股 | hk + 5位数字 | `hk00700`、`hk09988` |
+| 美股 | 1-5 字母（可选 .X 后缀） | `AAPL`、`TSLA`、`BRK.B` |
+| 美股指数 | SPX/DJI/IXIC 等 | `SPX`、`DJI`、`NASDAQ`、`VIX` |
 
 ### 注意事项
 

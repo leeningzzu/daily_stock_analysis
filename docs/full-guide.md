@@ -214,9 +214,13 @@ daily_stock_analysis/
 
 ### 数据源配置
 
-| 变量名 | 说明 | 必填 |
-|--------|------|:----:|
-| `TUSHARE_TOKEN` | Tushare Pro Token | 可选 |
+| 变量名 | 说明 | 默认值 | 必填 |
+|--------|------|--------|:----:|
+| `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
+| `ENABLE_REALTIME_QUOTE` | 启用实时行情（关闭后使用历史收盘价分析） | `true` | 可选 |
+| `ENABLE_REALTIME_TECHNICAL_INDICATORS` | 盘中实时技术面：启用时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘 | `true` | 可选 |
+| `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布分析（该接口不稳定，云端部署建议关闭） | `true` | 可选 |
+| `REALTIME_SOURCE_PRIORITY` | 实时行情数据源优先级（逗号分隔），如 `tencent,akshare_sina,efinance,akshare_em` | 见 .env.example | 可选 |
 
 ### 其他配置
 
@@ -228,6 +232,7 @@ daily_stock_analysis/
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户 | `cn` |
+| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |
@@ -357,6 +362,7 @@ python main.py --stocks 600519,300750 # 指定股票
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
+python main.py --force-run            # 非交易日也强制执行（Issue #373）
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
@@ -408,6 +414,7 @@ python main.py --schedule --no-run-immediately
 | `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
 | `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 启动服务时是否立即运行一次 | `true` | `false` |
+| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
 
 例如在 Docker 中配置：
 
@@ -415,6 +422,14 @@ python main.py --schedule --no-run-immediately
 # 设置启动时不立即分析
 docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
 ```
+
+#### 交易日判断（Issue #373）
+
+默认根据自选股市场（A 股 / 港股 / 美股）和 `MARKET_REVIEW_REGION` 判断是否为交易日：
+- 使用 `exchange-calendars` 区分 A 股 / 港股 / 美股各自的交易日历（含节假日）
+- 混合持仓时，每只股票只在其市场开市日分析，休市股票当日跳过
+- 全部相关市场均为非交易日时，整体跳过执行（不启动 pipeline、不发推送）
+- 覆盖方式：`TRADING_DAY_CHECK_ENABLED=false` 或 命令行 `--force-run`
 
 #### 使用 Crontab
 
@@ -594,6 +609,7 @@ GEMINI_MODEL=gemini-3-flash-preview
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-chat
+# 思考模式：deepseek-reasoner、deepseek-r1、qwq 等自动识别；deepseek-chat 系统按模型名自动启用
 ```
 
 ### 调试模式

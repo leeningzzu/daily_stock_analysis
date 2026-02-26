@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { agentApi } from '../api/agent';
+import { generateUUID } from '../utils/uuid';
 import type { StrategyInfo } from '../api/agent';
 import { historyApi } from '../api/history';
 
@@ -64,7 +65,7 @@ const ChatPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialFollowUpHandled = useRef(false);
   // Stable session ID for multi-turn conversation - persists for the page lifetime
-  const sessionIdRef = useRef(crypto.randomUUID());
+  const sessionIdRef = useRef(generateUUID());
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

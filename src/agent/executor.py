@@ -461,6 +461,9 @@ class AgentExecutor:
                         for tc in response.tool_calls
                     ],
                 }
+                # Only present for DeepSeek thinking mode; None for all other providers
+                if response.reasoning_content is not None:
+                    assistant_msg["reasoning_content"] = response.reasoning_content
                 messages.append(assistant_msg)
 
                 # Execute tool calls — parallel when multiple, sequential when single

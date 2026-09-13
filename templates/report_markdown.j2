@@ -70,6 +70,41 @@
 | 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
 {% endif %}
 
+{% set factor_decision = dashboard.get('factor_decision') or {} %}
+{% if report_language == 'zh' and factor_decision %}
+### 🧭 综合评估
+
+{% if factor_decision.get('conclusion') %}**结论**: {{ factor_decision.get('conclusion') }}
+
+{% endif %}
+{% if factor_decision.get('composite_score') is number %}**技术综合评分**: {{ factor_decision.get('composite_score')|round|int }}/100（用于排序和解释，不代表胜率或概率）
+{% endif %}
+{% set historical_reference = factor_decision.get('historical_reference') or {} %}
+{% if historical_reference.get('display') %}**历史参考胜率**: {{ historical_reference.get('display') }}
+{% endif %}
+{% set current_probability = factor_decision.get('current_probability') or {} %}
+{% if current_probability.get('display') %}**当前机会概率**: {{ current_probability.get('display') }}
+{% endif %}
+
+{% if factor_decision.get('why') %}**为什么**:
+{% for item in factor_decision.get('why')[:4] %}- {{ item }}
+{% endfor %}
+{% endif %}
+{% if factor_decision.get('action_condition') %}**操作条件**: {{ factor_decision.get('action_condition') }}
+{% endif %}
+{% if factor_decision.get('invalidation_condition') %}**失效条件**: {{ factor_decision.get('invalidation_condition') }}
+{% endif %}
+{% if factor_decision.get('valuation') %}**{{ factor_decision.get('valuation') }}**
+{% endif %}
+{% if factor_decision.get('cost_structure') %}{{ factor_decision.get('cost_structure') }}
+{% endif %}
+{% if factor_decision.get('risk_notes') %}**主要风险**:
+{% for item in factor_decision.get('risk_notes')[:3] %}- {{ item }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+
 {{ market_snapshot(result) }}
 
 {% if data_persp %}

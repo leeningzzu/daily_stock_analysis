@@ -131,6 +131,58 @@ def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str
     return "、".join(formatted) if formatted else none_text
 
 
+def _append_factor_decision_block(lines: List[str], factor: Any, report_language: str) -> None:
+    """Render deterministic factor summary in human language only."""
+    if report_language != "zh" or not isinstance(factor, dict):
+        return
+    conclusion = str(factor.get("conclusion") or "").strip()
+    score = factor.get("composite_score")
+    historical = factor.get("historical_reference") or {}
+    probability = factor.get("current_probability") or {}
+    why = factor.get("why") or []
+    action_condition = str(factor.get("action_condition") or "").strip()
+    invalidation = str(factor.get("invalidation_condition") or "").strip()
+    valuation = str(factor.get("valuation") or "").strip()
+    cost_structure = str(factor.get("cost_structure") or "").strip()
+    risk_notes = factor.get("risk_notes") or []
+
+    lines.extend(["### 🧭 综合评估", ""])
+    if conclusion:
+        lines.extend([f"**结论**: {conclusion}", ""])
+    if isinstance(score, (int, float)):
+        lines.append(f"**技术综合评分**: {int(round(score))}/100（用于排序和解释，不代表胜率或概率）")
+    hist_text = str(historical.get("display") or "").strip() if isinstance(historical, dict) else ""
+    if hist_text:
+        lines.append(f"**历史参考胜率**: {hist_text}")
+    prob_text = str(probability.get("display") or "").strip() if isinstance(probability, dict) else ""
+    if prob_text:
+        lines.append(f"**当前机会概率**: {prob_text}")
+    lines.append("")
+
+    if why:
+        lines.append("**为什么**:")
+        for item in why[:4]:
+            text = str(item or "").strip()
+            if text:
+                lines.append(f"- {text}")
+        lines.append("")
+    if action_condition:
+        lines.append(f"**操作条件**: {action_condition}")
+    if invalidation:
+        lines.append(f"**失效条件**: {invalidation}")
+    if valuation:
+        lines.append(f"**{valuation}**")
+    if cost_structure:
+        lines.append(cost_structure)
+    if risk_notes:
+        lines.append("**主要风险**:")
+        for item in risk_notes[:3]:
+            text = str(item or "").strip()
+            if text:
+                lines.append(f"- {text}")
+    lines.append("")
+
+
 def _append_strategy_synthesis_block(lines: List[str], strategy_synthesis: Any, labels: Dict[str, str], report_language: str) -> None:
     strategy_synthesis = normalize_strategy_synthesis_payload(strategy_synthesis)
     if not strategy_synthesis:
@@ -1381,6 +1433,11 @@ class NotificationService(
                         "",
                     ])
 
+                _append_factor_decision_block(
+                    report_lines,
+                    dashboard.get("factor_decision") if dashboard else None,
+                    report_language,
+                )
                 self._append_market_snapshot(report_lines, result)
 
                 # ========== 数据透视 ==========

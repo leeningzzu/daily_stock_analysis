@@ -89,6 +89,7 @@ from src.services.decision_signal_extractor import (
     resolve_decision_signal_action_fields,
 )
 from src.services.decision_signal_summary import summarize_decision_signal
+from src.services.factor_decision_summary import build_stock_factor_decision_summary
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -834,6 +835,13 @@ class StockAnalysisPipeline:
                     result,
                     report_type=report_type.value,
                     previous_operation_advice=action_source_advice,
+                )
+                self._attach_factor_decision_summary(
+                    result,
+                    code=code,
+                    trend_result=trend_result,
+                    fundamental_context=fundamental_context,
+                    chip_data=chip_data,
                 )
 
             # Step 8: 保存分析历史记录
@@ -1631,6 +1639,13 @@ class StockAnalysisPipeline:
                             ),
                         )
                     )
+                self._attach_factor_decision_summary(
+                    result,
+                    code=code,
+                    trend_result=trend_result,
+                    fundamental_context=fundamental_context,
+                    chip_data=chip_data,
+                )
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -2102,6 +2117,39 @@ class StockAnalysisPipeline:
         if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
             explicit_action = result.dashboard.get("action")
         return populate_decision_action_fields(result, explicit_action=explicit_action)
+
+    def _attach_factor_decision_summary(
+        self,
+        result: AnalysisResult,
+        *,
+        code: str,
+        trend_result: Optional[TrendAnalysisResult],
+        fundamental_context: Optional[Dict[str, Any]],
+        chip_data: Optional[ChipDistribution],
+    ) -> None:
+        """Attach the first deterministic stock factor summary without changing decisions."""
+        if trend_result is None or SearchService.is_index_or_etf(code, getattr(result, "name", "")):
+            return
+        report_language = normalize_report_language(
+            getattr(result, "report_language", None)
+            or getattr(self.config, "report_language", "zh")
+        )
+        # First slice is intentionally Chinese-only; other report languages keep
+        # their existing output instead of receiving mixed-language content.
+        if report_language != "zh":
+            return
+        try:
+            summary = build_stock_factor_decision_summary(
+                trend_result,
+                fundamental_context=fundamental_context,
+                chip_data=chip_data,
+            )
+        except Exception as exc:
+            logger.warning("[%s] 构建确定性综合评估失败，保留原报告: %s", code, exc)
+            return
+        if not isinstance(result.dashboard, dict):
+            result.dashboard = {}
+        result.dashboard["factor_decision"] = summary
 
     @staticmethod
     def _refresh_decision_action_for_final_result(

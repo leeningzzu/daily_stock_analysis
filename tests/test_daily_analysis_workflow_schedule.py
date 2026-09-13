@@ -207,6 +207,41 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.text,
         )
 
+    def test_p0_input_is_manual_only_and_does_not_change_the_schedule_gate(self):
+        self.assertIn("p0_stock_codes:", self.text)
+        self.assertIn(
+            "P0_STOCK_CODES: ${{ github.event.inputs.p0_stock_codes || '' }}",
+            self.text,
+        )
+        self.assertIn(
+            'if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && '
+            '[ -n "${P0_STOCK_CODES:-}" ]; then',
+            self.text,
+        )
+        self.assertIn(
+            'python main.py --p0-bounded-trial --stocks "$P0_STOCK_CODES" '
+            '--no-market-review $FORCE_RUN_ARG',
+            self.text,
+        )
+
+        schedule_gate = self._gate_source()
+        self.assertNotIn("P0_STOCK_CODES", schedule_gate)
+        self.assertNotIn("p0_stock_codes", schedule_gate)
+
+    def test_p0_input_never_reads_or_overwrites_stock_list_when_active(self):
+        active_start = self.text.index("# P0 有界验收只消费本次 workflow_dispatch 输入")
+        active_end = self.text.index("# 处理 LITELLM YAML 配置文件", active_start)
+        binding = self.text[active_start:active_end]
+
+        self.assertIn('P0_BOUNDED_TRIAL="true"', binding)
+        self.assertIn("unset STOCK_LIST STOCK_LIST_CONFIG", binding)
+        self.assertIn("else", binding)
+        self.assertIn('export STOCK_LIST="$STOCK_LIST_CONFIG"', binding)
+        self.assertLess(
+            binding.index('P0_BOUNDED_TRIAL="true"'),
+            binding.index("else"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

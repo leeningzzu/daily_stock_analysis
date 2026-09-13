@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.services.factor_decision_summary import build_stock_factor_decision_summary
+from src.analyzer import AnalysisResult
+from src.services.factor_decision_summary import (
+    apply_canonical_decision_to_result,
+    assert_canonical_consumer_consistency,
+    build_stock_factor_decision_summary,
+)
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
 
 
@@ -51,6 +56,7 @@ def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate
         "display": "暂不提供（尚未完成独立校准）",
     }
     assert "不代表胜率或概率" in summary["score_note"]
+    assert "canonical_decision" not in summary
     assert "未显示明显高估" in summary["valuation"]
     assert "筹码平均成本参考约 10.00" in summary["cost_structure"]
     assert "主力" not in str(summary)
@@ -110,3 +116,114 @@ def test_stock_analyzer_shrink_volume_wording_no_longer_asserts_main_force_inten
     assert "卖压收缩" in result.volume_trend
     assert "需后续确认" in result.volume_trend
     assert "主力" not in result.volume_trend
+
+
+def _llm_result(*, advice="买入", action="buy", decision_type="buy"):
+    return AnalysisResult(
+        code="600519",
+        name="贵州茅台",
+        sentiment_score=96,
+        trend_prediction="强烈看多",
+        operation_advice=advice,
+        decision_type=decision_type,
+        action=action,
+        action_label="买入",
+        analysis_summary="LLM 建议立即买入",
+        buy_reason="LLM 看多并建议买入",
+        dashboard={
+            "action": action,
+            "action_label": "买入",
+            "operation_advice": advice,
+            "decision_type": decision_type,
+            "analysis_summary": "LLM 建议立即买入",
+            "buy_reason": "LLM 看多并建议买入",
+            "core_conclusion": {
+                "one_sentence": "立即买入",
+                "position_advice": {"no_position": "买入", "has_position": "加仓"},
+            },
+            "phase_decision": {"immediate_action": "现在买入"},
+            "strategy_synthesis": {"final_signal": "buy"},
+            "battle_plan": {
+                "sniper_points": {"ideal_buy": "10.00"},
+                "action_checklist": ["买入"],
+            },
+            "decision_score_calibration": {"final_action": "buy"},
+            "decision_stability": {"final_action": "buy", "reason": "LLM"},
+        },
+    )
+
+
+def test_p0_canonical_wait_overrides_conflicting_llm_buy_in_every_action_slot():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99), include_canonical=True
+    )
+    result = apply_canonical_decision_to_result(_llm_result(), summary)
+
+    assert summary["canonical_decision"] == {
+        "authority": "stock_trend_quality_pullback_v1",
+        "action": "WAIT",
+        "public_action": "watch",
+        "evidence_state": "PROVEN",
+        "hard_veto": False,
+        "reason_codes": ["CONDITIONAL_OBSERVATION_ONLY"],
+    }
+    assert result.action == "watch"
+    assert result.decision_type == "hold"
+    assert result.dashboard["strategy_synthesis"]["final_signal"] == "hold"
+    assert result.dashboard["decision_score_calibration"]["final_action"] == "watch"
+    assert result.dashboard["decision_stability"]["final_action"] == "watch"
+    assert "P0 不生成买卖点" in result.dashboard["battle_plan"]["sniper_points"]["ideal_buy"]
+    assert_canonical_consumer_consistency(result)
+
+
+def test_p0_canonical_wait_overrides_unsupported_llm_sell():
+    summary = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    result = _llm_result(advice="卖出", action="sell", decision_type="sell")
+
+    apply_canonical_decision_to_result(result, summary)
+
+    assert result.action == "watch"
+    assert result.operation_advice.startswith("观望")
+    assert result.dashboard["phase_decision"]["immediate_action"].startswith("观望")
+    assert_canonical_consumer_consistency(result)
+
+
+def test_p0_hard_veto_overrides_high_score_and_positive_llm_text():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99, volume_status=_enum("放量下跌")),
+        include_canonical=True,
+    )
+    result = apply_canonical_decision_to_result(_llm_result(), summary)
+
+    assert summary["canonical_decision"]["action"] == "PASS"
+    assert summary["canonical_decision"]["hard_veto"] is True
+    assert "HEAVY_VOLUME_DOWN" in summary["canonical_decision"]["reason_codes"]
+    assert result.action == "avoid"
+    assert result.operation_advice.startswith("回避")
+    assert_canonical_consumer_consistency(result)
+
+
+def test_p0_missing_required_evidence_fails_closed_to_unknown_wait():
+    summary = build_stock_factor_decision_summary(None, include_canonical=True)
+    result = apply_canonical_decision_to_result(_llm_result(), summary)
+
+    assert summary["composite_score"] is None
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert summary["canonical_decision"]["evidence_state"] == "UNKNOWN"
+    assert summary["canonical_decision"]["reason_codes"] == ["MISSING_TREND_RESULT"]
+    assert result.operation_advice.startswith("观望：必需证据不足")
+    assert_canonical_consumer_consistency(result)
+
+
+def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=68), include_canonical=True
+    )
+    result = _llm_result(advice="观望", action="watch", decision_type="hold")
+    result.technical_analysis = "均线结构改善，但仍需确认。"
+
+    apply_canonical_decision_to_result(result, summary)
+
+    assert result.technical_analysis == "均线结构改善，但仍需确认。"
+    assert result.action == "watch"
+    assert_canonical_consumer_consistency(result)

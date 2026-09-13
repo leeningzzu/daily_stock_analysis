@@ -89,7 +89,11 @@ from src.services.decision_signal_extractor import (
     resolve_decision_signal_action_fields,
 )
 from src.services.decision_signal_summary import summarize_decision_signal
-from src.services.factor_decision_summary import build_stock_factor_decision_summary
+from src.services.factor_decision_summary import (
+    apply_canonical_decision_to_result,
+    assert_canonical_consumer_consistency,
+    build_stock_factor_decision_summary,
+)
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -104,6 +108,10 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+
+class P0BoundedTrialError(RuntimeError):
+    """Fail-closed boundary error for the manual P0 product trial."""
 
 
 def _share_image_payload(result: Any) -> Optional[Dict[str, Any]]:
@@ -209,6 +217,9 @@ class StockAnalysisPipeline:
     2. 协调数据获取、存储、搜索、分析、通知等模块
     3. 实现并发控制和异常处理
     """
+
+    p0_bounded_trial = False
+    p0_stock_codes: Tuple[str, ...] = ()
     
     def __init__(
         self,
@@ -225,6 +236,8 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         daily_market_context_enabled: Optional[bool] = None,
         daily_market_context_allow_generate: bool = True,
+        p0_bounded_trial: bool = False,
+        p0_stock_codes: Optional[List[str]] = None,
     ):
         """
         初始化调度器
@@ -234,7 +247,11 @@ class StockAnalysisPipeline:
             max_workers: 最大并发线程数（可选，默认从配置读取）
         """
         self.config = config or get_config()
-        self.max_workers = max_workers or self.config.max_workers
+        self.p0_bounded_trial = bool(p0_bounded_trial)
+        self.p0_stock_codes = list(p0_stock_codes or [])
+        if self.p0_bounded_trial and not 1 <= len(self.p0_stock_codes) <= 2:
+            raise P0BoundedTrialError("P0 requires exactly one or two target stocks")
+        self.max_workers = 1 if self.p0_bounded_trial else (max_workers or self.config.max_workers)
         self.source_message = source_message
         self.query_id = query_id
         self.trace_id = trace_id or query_id
@@ -258,38 +275,44 @@ class StockAnalysisPipeline:
         self.fetcher_manager = DataFetcherManager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
-        self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
+        self.analyzer = GeminiAnalyzer(
+            config=self.config,
+            skills=self.analysis_skills,
+            p0_bounded_trial=self.p0_bounded_trial,
+        )
         self.notifier = NotificationService(source_message=source_message)
         self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
         self.market_hotspot_service: Optional[MarketHotspotService] = None
-        try:
-            self.market_hotspot_service = MarketHotspotService(
-                fetcher_manager=self.fetcher_manager,
-            )
-        except Exception as exc:
-            logger.debug("market hotspot service init failed (fail-open): %s", exc)
+        if not self.p0_bounded_trial:
+            try:
+                self.market_hotspot_service = MarketHotspotService(
+                    fetcher_manager=self.fetcher_manager,
+                )
+            except Exception as exc:
+                logger.debug("market hotspot service init failed (fail-open): %s", exc)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
         self._concept_rankings_cache_lock = threading.Lock()
         self._concept_rankings_cache: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
         
         # 初始化搜索服务（可选，初始化失败不应阻断主分析流程）
-        try:
-            self.search_service = SearchService(
-                bocha_keys=self.config.bocha_api_keys,
-                tavily_keys=self.config.tavily_api_keys,
-                anspire_keys=self.config.anspire_api_keys,
-                brave_keys=self.config.brave_api_keys,
-                serpapi_keys=self.config.serpapi_keys,
-                minimax_keys=self.config.minimax_api_keys,
-                searxng_base_urls=self.config.searxng_base_urls,
-                searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
-                news_max_age_days=self.config.news_max_age_days,
-                news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
-            )
-        except Exception as exc:
-            logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
-            self.search_service = None
+        self.search_service = None
+        if not self.p0_bounded_trial:
+            try:
+                self.search_service = SearchService(
+                    bocha_keys=self.config.bocha_api_keys,
+                    tavily_keys=self.config.tavily_api_keys,
+                    anspire_keys=self.config.anspire_api_keys,
+                    brave_keys=self.config.brave_api_keys,
+                    serpapi_keys=self.config.serpapi_keys,
+                    minimax_keys=self.config.minimax_api_keys,
+                    searxng_base_urls=self.config.searxng_base_urls,
+                    searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
+                    news_max_age_days=self.config.news_max_age_days,
+                    news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
+                )
+            except Exception as exc:
+                logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用技术分析引擎（均线/趋势/量价指标）")
@@ -310,20 +333,21 @@ class StockAnalysisPipeline:
             logger.warning("搜索服务未启用（未配置搜索能力）")
 
         # 初始化社交舆情服务（仅美股，可选）
-        try:
-            self.social_sentiment_service = SocialSentimentService(
-                api_key=self.config.social_sentiment_api_key,
-                api_url=self.config.social_sentiment_api_url,
-            )
-            if self.social_sentiment_service.is_available:
-                logger.info("Social sentiment service enabled (Reddit/X/Polymarket, US stocks only)")
-        except Exception as exc:
-            logger.warning(
-                "社交舆情服务初始化失败，将跳过舆情分析: %s",
-                exc,
-                exc_info=True,
-            )
-            self.social_sentiment_service = None
+        self.social_sentiment_service = None
+        if not self.p0_bounded_trial:
+            try:
+                self.social_sentiment_service = SocialSentimentService(
+                    api_key=self.config.social_sentiment_api_key,
+                    api_url=self.config.social_sentiment_api_url,
+                )
+                if self.social_sentiment_service.is_available:
+                    logger.info("Social sentiment service enabled (Reddit/X/Polymarket, US stocks only)")
+            except Exception as exc:
+                logger.warning(
+                    "社交舆情服务初始化失败，将跳过舆情分析: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     def _emit_progress(self, progress: int, message: str) -> None:
         """Best-effort bridge from pipeline stages to task SSE progress."""
@@ -506,12 +530,12 @@ class StockAnalysisPipeline:
             # config.is_agent_available() so that users who only configured an
             # API Key for the traditional analysis path are not silently
             # switched to Agent mode (which is slower and more expensive).
-            use_agent = getattr(self.config, 'agent_mode', False)
-            if not use_agent:
+            use_agent = False if self.p0_bounded_trial else getattr(self.config, 'agent_mode', False)
+            if not self.p0_bounded_trial and not use_agent:
                 if self.analysis_skills:
                     use_agent = True
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not use_agent:
+            if not self.p0_bounded_trial and not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
@@ -603,11 +627,13 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
-                code=code,
-                stock_name=stock_name,
-                market=market or "cn",
-            )
+            persisted_intelligence_context = ""
+            if not self.p0_bounded_trial:
+                persisted_intelligence_context = self._load_persisted_intelligence_context(
+                    code=code,
+                    stock_name=stock_name,
+                    market=market or "cn",
+                )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
@@ -756,8 +782,11 @@ class StockAnalysisPipeline:
                     enhanced_context,
                     news_context=news_context,
                     progress_callback=self._emit_progress,
-                    stream_progress_callback=_on_llm_stream,
+                    stream_progress_callback=(
+                        None if self.p0_bounded_trial else _on_llm_stream
+                    ),
                     analysis_context_pack_summary=analysis_context_pack_summary,
+                    p0_bounded_trial=self.p0_bounded_trial,
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 record_llm_run(
@@ -1207,7 +1236,7 @@ class StockAnalysisPipeline:
         market: str,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Fetch market-wide concept rankings once per pipeline run."""
-        if market != "cn":
+        if market != "cn" or self.p0_bounded_trial:
             return [], []
 
         service = getattr(self, "market_hotspot_service", None)
@@ -2127,8 +2156,15 @@ class StockAnalysisPipeline:
         fundamental_context: Optional[Dict[str, Any]],
         chip_data: Optional[ChipDistribution],
     ) -> None:
-        """Attach the first deterministic stock factor summary without changing decisions."""
-        if trend_result is None or SearchService.is_index_or_etf(code, getattr(result, "name", "")):
+        """Attach the factor summary and, in P0, finalize canonical public actions."""
+        is_index_or_etf = SearchService.is_index_or_etf(
+            code, getattr(result, "name", "")
+        )
+        if is_index_or_etf:
+            if self.p0_bounded_trial:
+                raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
+            return
+        if trend_result is None and not self.p0_bounded_trial:
             return
         report_language = normalize_report_language(
             getattr(result, "report_language", None)
@@ -2137,19 +2173,29 @@ class StockAnalysisPipeline:
         # First slice is intentionally Chinese-only; other report languages keep
         # their existing output instead of receiving mixed-language content.
         if report_language != "zh":
+            if self.p0_bounded_trial:
+                raise P0BoundedTrialError("P0 canonical report requires Chinese output")
             return
         try:
             summary = build_stock_factor_decision_summary(
                 trend_result,
                 fundamental_context=fundamental_context,
                 chip_data=chip_data,
+                include_canonical=self.p0_bounded_trial,
             )
         except Exception as exc:
+            if self.p0_bounded_trial:
+                raise P0BoundedTrialError(
+                    f"P0 canonical decision finalization failed for {code}: {exc}"
+                ) from exc
             logger.warning("[%s] 构建确定性综合评估失败，保留原报告: %s", code, exc)
             return
         if not isinstance(result.dashboard, dict):
             result.dashboard = {}
         result.dashboard["factor_decision"] = summary
+        if self.p0_bounded_trial:
+            apply_canonical_decision_to_result(result, summary)
+            assert_canonical_consumer_consistency(result)
 
     @staticmethod
     def _refresh_decision_action_for_final_result(
@@ -3188,6 +3234,18 @@ class StockAnalysisPipeline:
             分析结果列表
         """
         start_time = time.time()
+
+        if self.p0_bounded_trial:
+            if stock_codes is None or list(stock_codes) != self.p0_stock_codes:
+                raise P0BoundedTrialError(
+                    "P0 run must use the exact per-run target list supplied at construction"
+                )
+            if dry_run or not send_notification or merge_notification:
+                raise P0BoundedTrialError(
+                    "P0 requires analysis plus one direct aggregate Email notification"
+                )
+            if self.max_workers != 1:
+                raise P0BoundedTrialError("P0 requires max_workers=1")
         
         # 使用配置中的股票列表
         if stock_codes is None:
@@ -3318,6 +3376,10 @@ class StockAnalysisPipeline:
         
         logger.info("===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
+
+        if self.p0_bounded_trial:
+            self._finalize_p0_bounded_run(results, stock_codes, report_type)
+            return results
         
         # 保存报告到本地文件（无论是否推送通知都保存）
         if results and not dry_run:
@@ -3337,6 +3399,33 @@ class StockAnalysisPipeline:
                 self._send_notifications(results, report_type)
         
         return results
+
+    def _finalize_p0_bounded_run(
+        self,
+        results: List[AnalysisResult],
+        stock_codes: List[str],
+        report_type: ReportType,
+    ) -> str:
+        """Fail closed, render once, then perform exactly one direct Email send."""
+        result_codes = [str(getattr(result, "code", "") or "") for result in results]
+        if (
+            len(results) != len(stock_codes)
+            or len(set(result_codes)) != len(result_codes)
+            or set(result_codes) != set(stock_codes)
+        ):
+            raise P0BoundedTrialError("P0 requires every target stock to succeed exactly once")
+        if report_type is not ReportType.SIMPLE:
+            raise P0BoundedTrialError("P0 requires the aggregate simple report")
+        for result in results:
+            assert_canonical_consumer_consistency(result)
+
+        report = self._generate_aggregate_report(results, report_type)
+        if not isinstance(report, str) or not report.strip():
+            raise P0BoundedTrialError("P0 aggregate report is empty")
+        self.notifier.save_report_to_file(report)
+        if not self.notifier.send_to_email(report):
+            raise P0BoundedTrialError("P0 aggregate Email send failed")
+        return report
 
     def _send_single_stock_notification(
         self,

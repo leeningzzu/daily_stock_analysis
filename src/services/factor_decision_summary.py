@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _STRONG_TRENDS = {"强势多头", "多头排列"}
 _WEAK_TRENDS = {"空头排列", "强势空头"}
+_CANONICAL_WEAK_TRENDS = {"弱势多头", "弱势空头", "空头排列", "强势空头"}
+_NEGATIVE_SIGNALS = {"卖出", "强烈卖出"}
+_HARD_RISK_HINTS = ("重大利空", "重大风险", "退市", "放量跌破", "跌破关键支撑")
+_MISSING_EVIDENCE_HINTS = ("数据不足", "无法完成分析", "无法判断")
+_CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -202,11 +207,314 @@ def _risk_notes(trend_result: Any) -> List[str]:
     return risks or ["需继续关注市场环境、行业变化及关键支撑失效风险。"]
 
 
+def _canonical_decision(trend_result: Any) -> Dict[str, Any]:
+    """Produce the conservative P0 WAIT/PASS decision from deterministic inputs."""
+    reason_codes: List[str] = []
+    if trend_result is None:
+        reason_codes.append("MISSING_TREND_RESULT")
+        return {
+            "authority": _CANONICAL_AUTHORITY,
+            "action": "WAIT",
+            "public_action": "watch",
+            "evidence_state": "UNKNOWN",
+            "hard_veto": False,
+            "reason_codes": reason_codes,
+        }
+
+    trend = _enum_value(getattr(trend_result, "trend_status", None))
+    signal = _enum_value(getattr(trend_result, "buy_signal", None))
+    volume = _enum_value(getattr(trend_result, "volume_status", None))
+    score = _safe_float(getattr(trend_result, "signal_score", None))
+    risk_factors = [
+        str(item or "").strip()
+        for item in (getattr(trend_result, "risk_factors", None) or [])
+        if str(item or "").strip()
+    ]
+
+    if not trend:
+        reason_codes.append("MISSING_TREND_STATE")
+    if not signal:
+        reason_codes.append("MISSING_BUY_SIGNAL")
+    if not volume:
+        reason_codes.append("MISSING_VOLUME_STATE")
+    if score is None:
+        reason_codes.append("MISSING_SIGNAL_SCORE")
+    if any(any(hint in text for hint in _MISSING_EVIDENCE_HINTS) for text in risk_factors):
+        reason_codes.append("REQUIRED_EVIDENCE_UNAVAILABLE")
+
+    if reason_codes:
+        return {
+            "authority": _CANONICAL_AUTHORITY,
+            "action": "WAIT",
+            "public_action": "watch",
+            "evidence_state": "UNKNOWN",
+            "hard_veto": False,
+            "reason_codes": reason_codes,
+        }
+
+    hard_veto_codes: List[str] = []
+    if volume == "放量下跌":
+        hard_veto_codes.append("HEAVY_VOLUME_DOWN")
+    if trend in _CANONICAL_WEAK_TRENDS:
+        hard_veto_codes.append("WEAK_TREND")
+    if signal in _NEGATIVE_SIGNALS:
+        hard_veto_codes.append("NEGATIVE_TREND_SIGNAL")
+    if any(
+        text.startswith("❌") or any(hint in text for hint in _HARD_RISK_HINTS)
+        for text in risk_factors
+    ):
+        hard_veto_codes.append("DETERMINISTIC_HARD_RISK")
+
+    if hard_veto_codes:
+        return {
+            "authority": _CANONICAL_AUTHORITY,
+            "action": "PASS",
+            "public_action": "avoid",
+            "evidence_state": "PROVEN",
+            "hard_veto": True,
+            "reason_codes": list(dict.fromkeys(hard_veto_codes)),
+        }
+
+    return {
+        "authority": _CANONICAL_AUTHORITY,
+        "action": "WAIT",
+        "public_action": "watch",
+        "evidence_state": "PROVEN",
+        "hard_veto": False,
+        "reason_codes": ["CONDITIONAL_OBSERVATION_ONLY"],
+    }
+
+
+def _canonical_public_text(summary: Dict[str, Any]) -> Dict[str, str]:
+    decision = summary["canonical_decision"]
+    if decision["evidence_state"] == "UNKNOWN":
+        return {
+            "label": "观望",
+            "advice": "观望：必需证据不足，暂不采取买卖动作。",
+            "signal_type": "🟡数据不足 / 观望",
+            "no_position": "不新增仓位；等待必需趋势、评分与量价证据完整。",
+            "has_position": "不由本次 P0 结论推导买卖动作；按既有风险计划管理。",
+        }
+    if decision["action"] == "PASS":
+        return {
+            "label": "回避",
+            "advice": "回避：确定性风险或弱势条件尚未解除。",
+            "signal_type": "⚠️风险否决 / 回避",
+            "no_position": "不新增仓位；等待风险或弱势条件解除后再评估。",
+            "has_position": "不由本次 P0 结论生成卖出指令；按既有风险计划处理。",
+        }
+    return {
+        "label": "观望",
+        "advice": "观望：仅保留条件化观察，等待操作条件成立。",
+        "signal_type": "🟡条件观察 / 观望",
+        "no_position": "等待操作条件成立后再评估，不追高、不抢跑。",
+        "has_position": "本次 P0 不生成加减仓指令；按既有风险计划管理。",
+    }
+
+
+def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> Any:
+    """Make the deterministic P0 decision the sole public action authority."""
+    decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
+    if not isinstance(decision, dict):
+        raise ValueError("factor_decision.canonical_decision is required")
+    if decision.get("action") not in {"WAIT", "PASS"}:
+        raise ValueError("P0 canonical action must be WAIT or PASS")
+    if decision.get("public_action") not in {"watch", "avoid"}:
+        raise ValueError("P0 canonical public_action must be watch or avoid")
+
+    text = _canonical_public_text(summary)
+    conclusion = str(summary.get("conclusion") or text["advice"]).strip()
+    reason_codes = [str(item) for item in decision.get("reason_codes") or []]
+    reason_text = "、".join(reason_codes) or "CONDITIONAL_OBSERVATION_ONLY"
+
+    result.action = decision["public_action"]
+    result.action_label = text["label"]
+    result.operation_advice = text["advice"]
+    result.decision_type = "hold"
+    result.analysis_summary = conclusion
+    result.buy_reason = f"确定性 P0 权威：{reason_text}；不构成买入或卖出指令。"
+
+    dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+    result.dashboard = dashboard
+    dashboard["action"] = result.action
+    dashboard["action_label"] = result.action_label
+    dashboard["operation_advice"] = result.operation_advice
+    dashboard["decision_type"] = result.decision_type
+    dashboard["analysis_summary"] = result.analysis_summary
+    dashboard["buy_reason"] = result.buy_reason
+    dashboard["factor_decision"] = summary
+
+    dashboard["core_conclusion"] = {
+        "one_sentence": conclusion,
+        "signal_type": text["signal_type"],
+        "time_sensitivity": "不急；等待确定性条件或既有风险计划触发",
+        "position_advice": {
+            "no_position": text["no_position"],
+            "has_position": text["has_position"],
+        },
+    }
+
+    dashboard["phase_decision"] = {
+        "action_window": "P0 有界验收：仅观察，不执行买卖动作",
+        "immediate_action": text["advice"],
+        "watch_conditions": [
+            summary.get("action_condition", "等待操作条件完整"),
+            summary.get("invalidation_condition", "风险条件触发则继续回避"),
+        ],
+        "next_check_time": "下一次具备完整确定性证据时",
+        "confidence_reason": (
+            "必需证据不足，P0 按 UNKNOWN 失败关闭。"
+            if decision.get("evidence_state") == "UNKNOWN"
+            else "P0 仅依据确定性趋势、评分、量价与硬风险规则。"
+        ),
+        "data_limitations": (
+            ["必需证据不完整；LLM 仅作解释，不拥有动作权限。"]
+            if decision.get("evidence_state") == "UNKNOWN"
+            else ["P0 只允许 WAIT/PASS；不生成 BUY/HOLD/EXIT。"]
+        ),
+    }
+
+    dashboard["strategy_synthesis"] = {
+        "authority": _CANONICAL_AUTHORITY,
+        "canonical_public_action": decision["public_action"],
+        "final_signal": "hold",
+        "consensus_level": (
+            "insufficient" if decision.get("evidence_state") == "UNKNOWN" else "medium"
+        ),
+        "conflict_severity": "none",
+        "conflict_count": 0,
+        "confidence": 0.0 if decision.get("evidence_state") == "UNKNOWN" else 1.0,
+        "supporting_skills": [],
+        "opposing_skills": [],
+        "conflicts": [],
+        "summary_params": {"opinion_count": 1, "invalid_opinion_count": 0},
+    }
+
+    not_applicable = "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+    dashboard["battle_plan"] = {
+        "sniper_points": {
+            "ideal_buy": not_applicable,
+            "secondary_buy": not_applicable,
+            "stop_loss": "P0 不生成新止损位；沿用既有风险计划",
+            "take_profit": "P0 不生成新止盈位；沿用既有风险计划",
+        },
+        "position_strategy": {
+            "suggested_position": "不新增仓位",
+            "entry_plan": summary.get("action_condition", not_applicable),
+            "risk_control": summary.get("invalidation_condition", not_applicable),
+        },
+        "action_checklist": [
+            f"当前确定性动作：{decision['action']} / {text['label']}",
+            f"操作条件：{summary.get('action_condition', '待补充')}",
+            f"失效条件：{summary.get('invalidation_condition', '待补充')}",
+        ],
+    }
+
+    calibration = dashboard.get("decision_score_calibration")
+    calibration = dict(calibration) if isinstance(calibration, dict) else {}
+    calibration["final_action"] = decision["public_action"]
+    calibration["guardrail_reason"] = f"p0_canonical:{reason_text}"
+    dashboard["decision_score_calibration"] = calibration
+    stability = dashboard.get("decision_stability")
+    if isinstance(stability, dict):
+        stability = dict(stability)
+        stability["final_action"] = decision["public_action"]
+        stability["reason"] = f"p0_canonical:{reason_text}"
+        dashboard["decision_stability"] = stability
+    return result
+
+
+def assert_canonical_consumer_consistency(result: Any) -> None:
+    """Fail closed if any public action slot diverges from canonical P0 output."""
+    dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+    summary = dashboard.get("factor_decision")
+    decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
+    if not isinstance(decision, dict):
+        raise ValueError("canonical decision missing from result")
+    text = _canonical_public_text(summary)
+    expected = {
+        "result.action": (getattr(result, "action", None), decision["public_action"]),
+        "result.action_label": (getattr(result, "action_label", None), text["label"]),
+        "result.operation_advice": (getattr(result, "operation_advice", None), text["advice"]),
+        "result.decision_type": (getattr(result, "decision_type", None), "hold"),
+        "result.analysis_summary": (getattr(result, "analysis_summary", None), summary["conclusion"]),
+        "result.buy_reason": (
+            getattr(result, "buy_reason", None),
+            f"确定性 P0 权威：{'、'.join(str(item) for item in decision.get('reason_codes') or []) or 'CONDITIONAL_OBSERVATION_ONLY'}；不构成买入或卖出指令。",
+        ),
+        "dashboard.action": (dashboard.get("action"), decision["public_action"]),
+        "dashboard.action_label": (dashboard.get("action_label"), text["label"]),
+        "dashboard.operation_advice": (dashboard.get("operation_advice"), text["advice"]),
+        "dashboard.decision_type": (dashboard.get("decision_type"), "hold"),
+        "dashboard.analysis_summary": (dashboard.get("analysis_summary"), summary["conclusion"]),
+        "dashboard.buy_reason": (dashboard.get("buy_reason"), getattr(result, "buy_reason", None)),
+    }
+    core = dashboard.get("core_conclusion") or {}
+    phase = dashboard.get("phase_decision") or {}
+    strategy = dashboard.get("strategy_synthesis") or {}
+    battle = dashboard.get("battle_plan") or {}
+    expected.update(
+        {
+            "dashboard.core_conclusion.one_sentence": (core.get("one_sentence"), summary["conclusion"]),
+            "dashboard.core_conclusion.signal_type": (core.get("signal_type"), text["signal_type"]),
+            "dashboard.core_conclusion.position_advice": (
+                core.get("position_advice"),
+                {"no_position": text["no_position"], "has_position": text["has_position"]},
+            ),
+            "dashboard.phase_decision.immediate_action": (phase.get("immediate_action"), text["advice"]),
+            "dashboard.strategy_synthesis.final_signal": (strategy.get("final_signal"), "hold"),
+            "dashboard.strategy_synthesis.canonical_public_action": (
+                strategy.get("canonical_public_action"), decision["public_action"]
+            ),
+            "dashboard.decision_score_calibration.final_action": (
+                (dashboard.get("decision_score_calibration") or {}).get("final_action"),
+                decision["public_action"],
+            ),
+        }
+    )
+    stability = dashboard.get("decision_stability")
+    if isinstance(stability, dict):
+        expected["dashboard.decision_stability.final_action"] = (
+            stability.get("final_action"),
+            decision["public_action"],
+        )
+    not_applicable = "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+    expected["dashboard.battle_plan.sniper_points"] = (
+        battle.get("sniper_points") if isinstance(battle, dict) else None,
+        {
+            "ideal_buy": not_applicable,
+            "secondary_buy": not_applicable,
+            "stop_loss": "P0 不生成新止损位；沿用既有风险计划",
+            "take_profit": "P0 不生成新止盈位；沿用既有风险计划",
+        },
+    )
+    expected["dashboard.battle_plan.position_strategy"] = (
+        battle.get("position_strategy") if isinstance(battle, dict) else None,
+        {
+            "suggested_position": "不新增仓位",
+            "entry_plan": summary.get("action_condition", not_applicable),
+            "risk_control": summary.get("invalidation_condition", not_applicable),
+        },
+    )
+    expected["dashboard.battle_plan.action_checklist"] = (
+        battle.get("action_checklist") if isinstance(battle, dict) else None,
+        [
+            f"当前确定性动作：{decision['action']} / {text['label']}",
+            f"操作条件：{summary.get('action_condition', '待补充')}",
+            f"失效条件：{summary.get('invalidation_condition', '待补充')}",
+        ],
+    )
+    conflicts = [name for name, (actual, wanted) in expected.items() if actual != wanted]
+    if conflicts:
+        raise ValueError("canonical consumer conflict: " + ", ".join(conflicts))
+
+
 def build_stock_factor_decision_summary(
     trend_result: Any,
     *,
     fundamental_context: Optional[Dict[str, Any]] = None,
     chip_data: Any = None,
+    include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
 
@@ -216,11 +524,16 @@ def build_stock_factor_decision_summary(
     actually bound and calibrated.
     """
 
-    if trend_result is None:
+    if trend_result is None and not include_canonical:
         raise ValueError("trend_result is required")
 
-    raw_score = _safe_float(getattr(trend_result, "signal_score", 0))
-    score = int(max(0, min(100, round(raw_score or 0))))
+    canonical_decision = _canonical_decision(trend_result) if include_canonical else None
+    raw_score = _safe_float(getattr(trend_result, "signal_score", None))
+    score = (
+        int(max(0, min(100, round(raw_score))))
+        if raw_score is not None
+        else None if include_canonical else 0
+    )
     support, _ = _nearest_levels(trend_result)
 
     valuation = _valuation_summary(fundamental_context)
@@ -251,7 +564,14 @@ def build_stock_factor_decision_summary(
         action_condition = "若回调后止跌并出现量价重新转强，可重新评估买入条件。"
         invalidation_condition = "若趋势转弱并伴随放量下跌，则取消原判断。"
 
-    return {
+    if canonical_decision and canonical_decision["evidence_state"] == "UNKNOWN":
+        conclusion = "数据不足，暂不采取买卖动作；等待必需趋势、评分与量价证据完整。"
+    elif canonical_decision and canonical_decision["action"] == "PASS":
+        conclusion = "风险或弱势条件触发，当前回避新增仓位；等待条件修复后再评估。"
+    else:
+        conclusion = _conclusion(trend_result, score if score is not None else 0)
+
+    summary = {
         "strategy_id": "stock_trend_quality_pullback_v1",
         "contract_version": "1.0",
         "composite_score": score,
@@ -264,7 +584,7 @@ def build_stock_factor_decision_summary(
             "available": False,
             "display": "暂不提供（尚未完成独立校准）",
         },
-        "conclusion": _conclusion(trend_result, score),
+        "conclusion": conclusion,
         "why": why[:4],
         "action_condition": action_condition,
         "invalidation_condition": invalidation_condition,
@@ -273,3 +593,6 @@ def build_stock_factor_decision_summary(
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,
     }
+    if canonical_decision is not None:
+        summary["canonical_decision"] = canonical_decision
+    return summary

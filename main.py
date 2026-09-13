@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -81,6 +82,88 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
+_P0_STOCK_INDEX_PATH = Path(__file__).resolve().parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
+_P0_CODE_PATTERN = re.compile(r"^(?:(SH|SZ)\.?)?(\d{6})(?:\.(SH|SZ))?$")
+_P0_INDEX_CACHE: Optional[Dict[str, str]] = None
+
+
+class P0BoundedTrialError(RuntimeError):
+    """Fail-closed boundary error for the manual P0 product trial."""
+
+
+def _load_p0_cn_equity_index() -> Dict[str, str]:
+    """Load the checked-in ordinary-CN-stock identity set without network access."""
+    global _P0_INDEX_CACHE
+    if _P0_INDEX_CACHE is not None:
+        return _P0_INDEX_CACHE
+    try:
+        payload = json.loads(_P0_STOCK_INDEX_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise P0BoundedTrialError(f"P0 stock identity index unavailable: {exc}") from exc
+
+    index: Dict[str, str] = {}
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, list) or len(item) < 9:
+            continue
+        canonical = str(item[0] or "").strip().upper()
+        display = str(item[1] or "").strip()
+        market = str(item[6] or "").strip().upper()
+        instrument_type = str(item[7] or "").strip().lower()
+        enabled = item[8] is True
+        if (
+            market == "CN"
+            and instrument_type == "stock"
+            and enabled
+            and display.isdigit()
+            and len(display) == 6
+            and canonical.endswith((".SH", ".SZ"))
+        ):
+            index[display] = canonical.rsplit(".", 1)[1]
+    if not index:
+        raise P0BoundedTrialError("P0 stock identity index contains no eligible CN stocks")
+    _P0_INDEX_CACHE = index
+    return index
+
+
+def validate_p0_stock_codes(raw_codes: str) -> List[str]:
+    """Return exactly 1-2 checked-in Shanghai/Shenzhen ordinary A-share codes."""
+    tokens = [str(value or "").strip().upper() for value in split_stock_list(raw_codes)]
+    if not 1 <= len(tokens) <= 2:
+        raise P0BoundedTrialError("P0 requires exactly one or two stock codes")
+
+    stock_index = _load_p0_cn_equity_index()
+    normalized: List[str] = []
+    for token in tokens:
+        match = _P0_CODE_PATTERN.fullmatch(token)
+        if match is None:
+            raise P0BoundedTrialError(f"P0 rejects non-CN or unsupported symbol: {token}")
+        prefix_exchange, code, suffix_exchange = match.groups()
+        if prefix_exchange and suffix_exchange and prefix_exchange != suffix_exchange:
+            raise P0BoundedTrialError(f"P0 rejects conflicting exchange identity: {token}")
+        expected_exchange = stock_index.get(code)
+        if expected_exchange is None:
+            raise P0BoundedTrialError(f"P0 rejects ETF, index, inactive, or unknown CN symbol: {token}")
+        explicit_exchange = prefix_exchange or suffix_exchange
+        if explicit_exchange and explicit_exchange != expected_exchange:
+            raise P0BoundedTrialError(f"P0 rejects conflicting exchange identity: {token}")
+        if code in normalized:
+            raise P0BoundedTrialError(f"P0 rejects duplicate stock code: {code}")
+        normalized.append(code)
+    return normalized
+
+
+def _apply_p0_runtime_config(config: Config, args: argparse.Namespace) -> None:
+    """Apply process-local trial bounds without mutating persisted config or STOCK_LIST."""
+    config.single_stock_notify = False
+    config.merge_email_notification = False
+    config.report_type = "simple"
+    config.report_language = "zh"
+    config.report_integrity_retry = 0
+    config.agent_mode = False
+    config.agent_skills = []
+    config.analysis_delay = 0
+    args.workers = 1
+    args.no_market_review = True
 
 
 def _get_active_env_path() -> Path:
@@ -304,6 +387,12 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--p0-bounded-trial',
+        action='store_true',
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
@@ -728,6 +817,8 @@ def run_full_analysis(
     这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
+    p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
@@ -751,7 +842,8 @@ def run_full_analysis(
     from src.core.pipeline import StockAnalysisPipeline
 
     try:
-        _refresh_stock_index_cache_for_analysis(config)
+        if not p0_bounded_trial:
+            _refresh_stock_index_cache_for_analysis(config)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
 
@@ -834,6 +926,8 @@ def run_full_analysis(
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
             daily_market_context_allow_generate=should_use_daily_market_context,
+            p0_bounded_trial=p0_bounded_trial,
+            p0_stock_codes=stock_codes if p0_bounded_trial else None,
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -876,6 +970,12 @@ def run_full_analysis(
                 merge_notification=merge_notification,
                 current_time=analysis_reference_time,
             )
+
+        if p0_bounded_trial:
+            if len(results) != len(stock_codes or []):
+                raise P0BoundedTrialError("P0 requires every target stock to succeed")
+            logger.info("P0 有界验收完成：%d 只股票、单一汇总邮件", len(results))
+            return True
 
         if should_use_daily_market_context and not market_context_summary:
             (
@@ -1070,7 +1170,7 @@ def run_full_analysis(
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
-        if raise_errors:
+        if raise_errors or p0_bounded_trial:
             raise
         return False
 
@@ -1365,9 +1465,37 @@ def main() -> int:
         print(format_notification_diagnostics(result))
         return 0 if result.ok else 1
 
+    p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+    if p0_bounded_trial:
+        if (
+            os.getenv("GITHUB_ACTIONS") != "true"
+            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        ):
+            logger.error("P0_BOUNDARY_VIOLATION: bounded trial is workflow_dispatch-only")
+            return 2
+        if (
+            not args.stocks
+            or getattr(args, "portfolio", None)
+            or getattr(args, "schedule", False)
+            or getattr(args, "market_review", False)
+            or getattr(args, "dry_run", False)
+            or getattr(args, "no_notify", False)
+            or getattr(args, "single_notify", False)
+        ):
+            logger.error("P0_BOUNDARY_VIOLATION: incompatible CLI arguments")
+            return 2
+        try:
+            stock_codes = validate_p0_stock_codes(args.stocks)
+        except P0BoundedTrialError as exc:
+            logger.error("P0_BOUNDARY_VIOLATION: %s", exc)
+            return 2
+        _apply_p0_runtime_config(config, args)
+        logger.info("P0 有界验收使用本次输入: %s", stock_codes)
+    else:
+        stock_codes = None
+
     # 解析股票列表（统一为大写 Issue #355）
-    stock_codes = None
-    if args.stocks:
+    if args.stocks and not p0_bounded_trial:
         stock_codes = [
             resolve_index_stock_code_for_analysis(c)
             for c in split_stock_list(args.stocks)
@@ -1522,7 +1650,7 @@ def main() -> int:
             return 0
 
         # 模式2: 定时任务模式
-        if args.schedule or config.schedule_enabled:
+        if (args.schedule or config.schedule_enabled) and not p0_bounded_trial:
             if start_serve:
                 logger.info("模式: Web/API runtime scheduler")
                 logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
@@ -1590,7 +1718,7 @@ def main() -> int:
             return 0
 
         # 模式3: 正常单次运行
-        if config.run_immediately:
+        if p0_bounded_trial or config.run_immediately:
             try:
                 _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
             except FutuPortfolioError as exc:

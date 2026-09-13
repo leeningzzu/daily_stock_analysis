@@ -776,6 +776,19 @@ schedule:
 3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
 4. 点击 `Run workflow`
 
+#### P0 有界指定股票验收
+
+`workflow_dispatch` 额外提供可选输入 `p0_stock_codes`。仅当 `mode=stocks-only` 且该输入非空时，才进入 P0 有界验收；自动定时任务及未填写该输入的人工任务继续走原有路径。
+
+- 只接受 1–2 个经仓库内股票索引确认的沪深普通 A 股；ETF、指数、非中国资产、重复代码及交易所冲突会在分析前拒绝。
+- 本次输入不读取或覆盖 `STOCK_LIST`，不改变自动任务、自选股或 AUTO_SCREEN 行为。
+- P0 固定单 worker、非 Agent、单模型、非流式；每轮最多 2 次主模型请求，输出上限 4096 tokens，不做报告补全重试、模型回退、传输重试或参数恢复。
+- P0 不初始化新闻搜索或社交搜索，Tavily、SearXNG 等搜索调用上限为 0。
+- 全部目标必须各成功一次；之后只生成一份中文 simple 汇总报告，并将同一字符串直发为一封 Email。任一边界、目标、canonical 一致性或报告校验失败时，不发送通知并返回非零结果。
+- 公开动作由 `stock_trend_quality_pullback_v1` 的 deterministic `canonical_decision` 唯一控制。P0 只输出 `WAIT/watch` 或 `PASS/avoid`；LLM 仅提供解释，不能产生或覆盖 BUY/HOLD/EXIT。
+
+在非交易日进行明确授权的人工验收时，可同时设置 `force_run=true`；它只影响这次 `workflow_dispatch`，不会改变自动计划任务的 strict trading-day gate。
+
 ### 本地定时任务
 
 内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。

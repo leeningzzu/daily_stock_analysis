@@ -693,6 +693,19 @@ Common time reference:
 | 18:00 | `'0 10 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
+#### P0 bounded specified-stock acceptance
+
+`workflow_dispatch` also exposes the optional `p0_stock_codes` input. P0 bounded acceptance is activated only when `mode=stocks-only` and that input is non-empty. Scheduled runs and manual runs without the input keep the existing path.
+
+- The input accepts only one or two Shanghai/Shenzhen ordinary A-shares verified by the checked-in stock index. ETFs, indices, non-CN assets, duplicates, and exchange conflicts are rejected before analysis.
+- The per-run input neither reads nor overwrites `STOCK_LIST`, and it does not change automatic schedules, watchlists, or AUTO_SCREEN.
+- P0 fixes one worker, non-Agent execution, one model, and non-streaming transport. Each run allows at most two primary model requests with a 4,096-token output ceiling and performs no report-completion retry, model fallback, transport retry, or parameter recovery.
+- P0 does not initialize news or social search; the Tavily/SearXNG and other search-call ceiling is zero.
+- Every target must succeed exactly once. The pipeline then renders one Chinese simple aggregate report and sends that exact string as one Email. Any boundary, target, canonical-consistency, or report failure produces no notification and a non-zero result.
+- The deterministic `stock_trend_quality_pullback_v1` `canonical_decision` is the sole public action authority. P0 emits only `WAIT/watch` or `PASS/avoid`; the LLM is explanation-only and cannot create or override BUY/HOLD/EXIT.
+
+For an explicitly authorized manual acceptance run on a non-trading day, `force_run=true` may be used for that `workflow_dispatch` only; it does not alter the automatic schedule's strict trading-day gate.
+
 ### Local Scheduled Tasks
 
 ```bash

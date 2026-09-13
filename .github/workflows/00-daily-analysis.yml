@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每个工作日北京时间 19:00 (UTC 11:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 11 * * 1-5'     # 周一到周五，UTC 11:00 = 北京时间 19:00
   
   # 手动触发
   workflow_dispatch:
@@ -56,11 +56,67 @@ jobs:
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
       
+      - name: 严格校验中国交易日（自动计划）
+        id: strict_cn_schedule_gate
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+
+          allow_analysis = False
+          reason = "calendar_not_proven"
+
+          try:
+              from src.core.trading_calendar import build_market_phase_context
+
+              context = build_market_phase_context(
+                  market="cn",
+                  trigger_source="github_schedule",
+                  analysis_phase="auto",
+              )
+
+              allow_analysis = context.is_trading_day is True
+
+              if allow_analysis:
+                  reason = (
+                      f"phase={context.phase.value};"
+                      f"warnings={','.join(context.warnings)}"
+                  )
+              else:
+                  reason = (
+                      f"skip_phase={context.phase.value};"
+                      f"warnings={','.join(context.warnings)}"
+                  )
+
+          except Exception as exc:
+              reason = f"calendar_exception={type(exc).__name__}"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(
+                  f"allow_analysis={'true' if allow_analysis else 'false'}\n"
+              )
+              output.write(f"reason={reason}\n")
+
+          print(
+              "STRICT_CN_SCHEDULE_GATE "
+              f"allow_analysis={allow_analysis} {reason}"
+          )
+          PY
+
+      - name: 记录自动计划跳过
+        if: ${{ github.event_name == 'schedule' && steps.strict_cn_schedule_gate.outputs.allow_analysis != 'true' }}
+        shell: bash
+        run: |
+          echo "SKIP_NO_PUSH: XSHG trading-day proof is not exactly True."
+          echo "gate_reason=${{ steps.strict_cn_schedule_gate.outputs.reason }}"
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
       
       - name: 执行股票分析
+        if: ${{ github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true' }}
         env:
           # ==========================================
           # AI 配置

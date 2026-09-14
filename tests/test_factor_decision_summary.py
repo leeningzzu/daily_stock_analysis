@@ -227,3 +227,83 @@ def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     assert result.technical_analysis == "均线结构改善，但仍需确认。"
     assert result.action == "watch"
     assert_canonical_consumer_consistency(result)
+
+# ASSET_RESEARCH_BRIEF_PAYLOAD_V1_R002_TESTS
+from types import SimpleNamespace as _AssetBriefPayloadNamespace
+from src.services.factor_decision_summary import (
+    _build_asset_research_brief_v1 as _asset_brief_payload_builder,
+)
+
+
+def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0, 10.2],
+        resistance_levels=[11.3],
+    )
+    summary = {
+        "sections": {
+            "trend": "\u8d8b\u52bf\uff1a\u5747\u7ebf\u7ed3\u6784\u504f\u5f3a",
+            "volume_price": "\u91cf\u4ef7\uff1a\u7f29\u91cf\u56de\u8c03",
+            "price_structure": "\u7ed3\u6784\uff1a\u4e3b\u8981\u652f\u6491\u4ecd\u6709\u6548",
+            "valuation": "\u4f30\u503c\uff1a\u6570\u636e\u4e0d\u8db3",
+        },
+        "conclusion": "\u504f\u5f3a\uff0c\u7b49\u5f85\u786e\u8ba4\u3002",
+        "action_condition": "\u653e\u91cf\u7ad9\u7a33\u538b\u529b\u4f4d\u518d\u5347\u7ea7\u3002",
+        "invalidation_condition": "\u6709\u6548\u8dcc\u7834\u652f\u6491\u5219\u5931\u6548\u3002",
+        "risks": ["\u7a81\u7834\u91cf\u80fd\u4ecd\u9700\u786e\u8ba4\u3002"],
+        "canonical_decision": {
+            "authority": "stock_trend_quality_pullback_v1",
+            "action": "PASS",
+            "public_action": "watch",
+            "evidence_state": "PROVEN",
+            "hard_veto": False,
+            "reason_codes": [],
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+
+    assert brief["one_line_conclusion"] == summary["conclusion"]
+    assert brief["canonical"] == summary["canonical_decision"]
+    assert brief["coverage"] == {
+        "monthly": "MISSING",
+        "weekly": "MISSING",
+        "daily": "PARTIAL_CURRENT",
+        "60m": "MISSING",
+        "30m": "MISSING",
+    }
+    assert "\u5f53\u524d\u4ef7 10.50 \u5143" in brief["fused_paragraph"]
+    assert brief["historical_reference"]["available"] is False
+    assert brief["current_probability"]["available"] is False
+
+
+def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=None,
+        support_levels=[],
+        resistance_levels=[],
+    )
+    brief = _asset_brief_payload_builder(
+        trend,
+        {
+            "sections": {},
+            "conclusion": "\u6570\u636e\u4e0d\u8db3\uff0c\u6682\u4e0d\u5224\u65ad\u3002",
+            "canonical_decision": {
+                "authority": "stock_trend_quality_pullback_v1",
+                "action": "WAIT",
+                "public_action": "watch",
+                "evidence_state": "UNKNOWN",
+                "hard_veto": True,
+                "reason_codes": ["DATA_INSUFFICIENT"],
+            },
+        },
+    )
+
+    assert brief["current_price"]["source_state"] == "MISSING"
+    assert brief["key_levels"] == {"support": None, "resistance": None}
+    assert brief["valuation"]["status"] == "MISSING"
+    assert brief["historical_reference"]["available"] is False
+    assert brief["historical_reference"].get("n") is None
+    assert brief["current_probability"]["available"] is False
+    assert brief["current_probability"].get("value") is None

@@ -509,6 +509,183 @@ def assert_canonical_consumer_consistency(result: Any) -> None:
         raise ValueError("canonical consumer conflict: " + ", ".join(conflicts))
 
 
+
+# ASSET_RESEARCH_BRIEF_PAYLOAD_V1_R002
+def _asset_brief_v1_num(value):
+    try:
+        if value is None:
+            return None
+        number = float(value)
+        return number if number == number else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _asset_brief_v1_price(value):
+    number = _asset_brief_v1_num(value)
+    if number is None or number <= 0:
+        return None
+    return f"{number:.2f}"
+
+
+def _asset_brief_v1_text(value, prefixes=()):
+    text = str(value or "").strip()
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    return text.rstrip(" \u3002\uff1b;")
+
+
+def _asset_brief_v1_usable(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    blockers = (
+        "\u6570\u636e\u4e0d\u8db3",
+        "\u6682\u4e0d\u5224\u65ad",
+        "\u672a\u5f62\u6210\u53ef\u9760",
+        "\u5c1a\u672a\u5f62\u6210\u53ef\u9760",
+    )
+    return not any(blocker in text for blocker in blockers)
+
+
+def _build_asset_research_brief_v1(trend_result, summary):
+    summary = summary if isinstance(summary, dict) else {}
+    sections = summary.get("sections")
+    sections = sections if isinstance(sections, dict) else {}
+
+    conclusion = str(summary.get("conclusion") or "").strip()
+    trigger = str(summary.get("action_condition") or "").strip()
+    invalidation = str(summary.get("invalidation_condition") or "").strip()
+
+    risks = summary.get("risk_notes")
+    if not isinstance(risks, list):
+        risks = summary.get("risks")
+    if not isinstance(risks, list):
+        risks = []
+    risks = [str(x).strip() for x in risks if str(x).strip()][:2]
+
+    canonical = summary.get("canonical_decision")
+    canonical = dict(canonical) if isinstance(canonical, dict) else {
+        "authority": None,
+        "action": None,
+        "public_action": None,
+        "evidence_state": "NOT_BOUND",
+        "hard_veto": False,
+        "reason_codes": [],
+    }
+
+    price = _asset_brief_v1_num(getattr(trend_result, "current_price", None))
+    price_text = _asset_brief_v1_price(price)
+
+    support_values = []
+    for raw in (getattr(trend_result, "support_levels", None) or []):
+        value = _asset_brief_v1_num(raw)
+        if value is not None and value > 0:
+            support_values.append(value)
+
+    resistance_values = []
+    for raw in (getattr(trend_result, "resistance_levels", None) or []):
+        value = _asset_brief_v1_num(raw)
+        if value is not None and value > 0:
+            resistance_values.append(value)
+
+    support = max(support_values) if support_values else None
+    resistance = min(resistance_values) if resistance_values else None
+
+    trend = _asset_brief_v1_text(
+        sections.get("trend"), ("\u8d8b\u52bf\uff1a", "\u8d8b\u52bf:")
+    )
+    volume_price = _asset_brief_v1_text(
+        sections.get("volume_price"), ("\u91cf\u4ef7\uff1a", "\u91cf\u4ef7:")
+    )
+    structure = _asset_brief_v1_text(
+        sections.get("price_structure"), ("\u7ed3\u6784\uff1a", "\u7ed3\u6784:")
+    )
+    valuation = _asset_brief_v1_text(
+        sections.get("valuation"), ("\u4f30\u503c\uff1a", "\u4f30\u503c:")
+    )
+    cost = _asset_brief_v1_text(
+        sections.get("cost_structure"),
+        ("\u6210\u672c/\u7b79\u7801\uff1a", "\u6210\u672c/\u7b79\u7801:"),
+    )
+    momentum = _asset_brief_v1_text(
+        sections.get("momentum"), ("\u52a8\u91cf\uff1a", "\u52a8\u91cf:")
+    )
+
+    clauses = []
+    if price_text and trend:
+        clauses.append(f"\u5f53\u524d\u4ef7 {price_text} \u5143\uff0c\u65e5\u7ebf{trend}")
+    elif price_text:
+        clauses.append(f"\u5f53\u524d\u4ef7 {price_text} \u5143")
+    elif trend:
+        clauses.append(f"\u65e5\u7ebf{trend}")
+
+    for candidate in (volume_price, structure, valuation, cost, momentum):
+        if _asset_brief_v1_usable(candidate) and candidate not in clauses:
+            clauses.append(candidate)
+        if len(clauses) >= 4:
+            break
+
+    paragraph = "\uff1b".join(clauses[:4]).strip()
+    if paragraph:
+        paragraph += "\u3002"
+    paragraph += f"\u7efc\u5408\u6765\u770b\uff0c{conclusion}"
+
+    return {
+        "schema_version": "investor-brief-v1",
+        "report_mode": "ASSET_RESEARCH_BRIEF",
+        "report_version": "asset-research-brief-v1",
+        "coverage": {
+            "monthly": "MISSING",
+            "weekly": "MISSING",
+            "daily": "PARTIAL_CURRENT",
+            "60m": "MISSING",
+            "30m": "MISSING",
+        },
+        "coverage_text": (
+            "\u5f53\u524d\u8bc1\u636e\u8986\u76d6\uff1a\u65e5\u7ebf\u5df2\u5206\u6790\uff1b"
+            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u548c30\u5206\u949f"
+            "\u5c1a\u672a\u8fdb\u5165\u751f\u4ea7\u5224\u65ad\u3002"
+        ),
+        "canonical": canonical,
+        "one_line_conclusion": conclusion,
+        "fused_paragraph": paragraph,
+        "current_price": {
+            "value": price,
+            "source_state": "AVAILABLE" if price_text else "MISSING",
+        },
+        "key_levels": {
+            "support": _asset_brief_v1_price(support),
+            "resistance": _asset_brief_v1_price(resistance),
+        },
+        "trigger": trigger,
+        "invalidation": invalidation,
+        "risk_notes": risks,
+        "valuation": {
+            "status": "PARTIAL_CURRENT" if _asset_brief_v1_usable(valuation) else "MISSING",
+            "summary": str(sections.get("valuation") or "").strip(),
+            "uncertainty": (
+                "\u5c1a\u672a\u7ed1\u5b9a\u53ef\u9760\u5408\u7406\u4ef7\u683c\u533a\u95f4"
+                "\u3001\u5386\u53f2\u5206\u4f4d\u4e0e\u540c\u884c\u6bd4\u8f83\u3002"
+            ),
+        },
+        "historical_reference": {
+            "available": False,
+            "reason": (
+                "\u7f3a\u5c11\u540c\u7b56\u7565/\u540c\u671f\u9650/PIT\u4e00\u81f4"
+                "\u4e14\u6210\u719f\u7684\u6837\u672c\u3002"
+            ),
+        },
+        "current_probability": {
+            "available": False,
+            "reason": "\u5c1a\u672a\u5b8c\u6210\u72ec\u7acb\u6821\u51c6\u3002",
+        },
+        "detail_refs": ["factor_decision.sections", "trend_result"],
+    }
+
+
 def build_stock_factor_decision_summary(
     trend_result: Any,
     *,
@@ -595,4 +772,8 @@ def build_stock_factor_decision_summary(
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
+    summary["investor_brief"] = _build_asset_research_brief_v1(
+        trend_result,
+        summary,
+    )
     return summary

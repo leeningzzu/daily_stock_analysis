@@ -131,6 +131,130 @@ def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str
     return "、".join(formatted) if formatted else none_text
 
 
+def _get_valid_investor_brief(factor: Any, report_language: str) -> Optional[Dict[str, Any]]:
+    """Return a supported deterministic investor brief, otherwise preserve legacy rendering."""
+    if report_language != "zh" or not isinstance(factor, dict):
+        return None
+    brief = factor.get("investor_brief")
+    if not isinstance(brief, dict):
+        return None
+    if str(brief.get("schema_version") or "").strip() != "investor-brief-v1":
+        return None
+    if not str(brief.get("one_line_conclusion") or "").strip():
+        return None
+    if not str(brief.get("fused_paragraph") or "").strip():
+        return None
+    return brief
+
+
+def _append_investor_brief_block(lines: List[str], factor: Any, report_language: str) -> bool:
+    """Render the DAILY-FIRST investor brief without deriving new evidence or actions."""
+    brief = _get_valid_investor_brief(factor, report_language)
+    if brief is None:
+        return False
+
+    one_line = str(brief.get("one_line_conclusion") or "").strip()
+    fused = str(brief.get("fused_paragraph") or "").strip()
+    lines.extend([
+        "### 🧭 投资者简报",
+        "",
+        f"**综合结论**: {one_line}",
+        "",
+        fused,
+        "",
+    ])
+
+    score = factor.get("composite_score") if isinstance(factor, dict) else None
+    if isinstance(score, (int, float)):
+        lines.append(f"**综合评分**: {int(round(score))}/100（用于排序和解释，不代表胜率或概率）")
+
+    current_price = brief.get("current_price") or {}
+    if isinstance(current_price, dict):
+        price_value = current_price.get("value")
+        if isinstance(price_value, (int, float)) or str(price_value or "").strip():
+            lines.append(f"**当前价格**: {price_value}")
+
+    valuation = brief.get("valuation") or {}
+    if isinstance(valuation, dict):
+        valuation_parts = [
+            str(valuation.get("bucket") or "").strip(),
+            str(valuation.get("summary") or "").strip(),
+        ]
+        valuation_parts = [item for item in valuation_parts if item]
+        uncertainty = str(valuation.get("uncertainty") or "").strip()
+        if valuation_parts or uncertainty:
+            valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
+            if uncertainty:
+                valuation_text += f"（不确定性：{uncertainty}）"
+            lines.append(f"**估值**: {valuation_text}")
+
+    key_levels = brief.get("key_levels") or {}
+    if isinstance(key_levels, dict):
+        support = key_levels.get("support")
+        resistance = key_levels.get("resistance")
+        level_parts = []
+        if isinstance(support, (int, float)) or str(support or "").strip():
+            level_parts.append(f"支撑 {support}")
+        if isinstance(resistance, (int, float)) or str(resistance or "").strip():
+            level_parts.append(f"压力 {resistance}")
+        if level_parts:
+            lines.append(f"**关键位置**: {'｜'.join(level_parts)}")
+
+    trigger = str(brief.get("trigger") or "").strip()
+    if trigger:
+        lines.append(f"**触发条件**: {trigger}")
+    invalidation = str(brief.get("invalidation") or "").strip()
+    if invalidation:
+        lines.append(f"**失效条件**: {invalidation}")
+
+    coverage = brief.get("coverage") or {}
+    if isinstance(coverage, dict):
+        coverage_parts = []
+        for label, key in (("月线", "monthly"), ("周线", "weekly"), ("日线", "daily"), ("60m", "60m"), ("30m", "30m")):
+            value = str(coverage.get(key) or "").strip()
+            if value:
+                coverage_parts.append(f"{label} {value}")
+        if coverage_parts:
+            lines.append(f"**周期覆盖**: {'｜'.join(coverage_parts)}")
+
+    historical = brief.get("historical_reference") or {}
+    if isinstance(historical, dict) and historical:
+        if historical.get("available") is False:
+            reason = str(historical.get("reason") or "").strip()
+            text = "暂不提供"
+            if reason:
+                text += f"（{reason}）"
+            lines.append(f"**历史参考胜率**: {text}")
+        elif historical.get("available") is True:
+            positive_rate = historical.get("positive_rate")
+            sample_n = historical.get("n")
+            if isinstance(positive_rate, (int, float)) and isinstance(sample_n, int):
+                pct = positive_rate * 100 if 0 <= positive_rate <= 1 else positive_rate
+                lines.append(f"**历史参考胜率**: {pct:.1f}%（n={sample_n}）")
+
+    probability = factor.get("current_probability") or {}
+    if isinstance(probability, dict):
+        probability_text = str(probability.get("display") or "").strip()
+        if probability_text:
+            lines.append(f"**当前机会概率**: {probability_text}")
+
+    risk_notes = brief.get("risk_notes") or []
+    rendered_risks = []
+    if isinstance(risk_notes, list):
+        for item in risk_notes:
+            text = str(item or "").strip()
+            if text:
+                rendered_risks.append(text)
+            if len(rendered_risks) >= 2:
+                break
+    if rendered_risks:
+        lines.append("**主要风险**:")
+        lines.extend(f"- {item}" for item in rendered_risks)
+
+    lines.append("")
+    return True
+
+
 def _append_factor_decision_block(lines: List[str], factor: Any, report_language: str) -> None:
     """Render deterministic factor summary in human language only."""
     if report_language != "zh" or not isinstance(factor, dict):
@@ -1374,6 +1498,13 @@ class NotificationService(
                     f"## {signal_emoji} {stock_name} ({result.code})",
                     "",
                 ])
+                factor_decision = dashboard.get("factor_decision") if dashboard else None
+                has_investor_brief = _append_investor_brief_block(
+                    report_lines,
+                    factor_decision,
+                    report_language,
+                )
+
                 # ========== 舆情与基本面概览（放在最前面）==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
                 if intel:
@@ -1407,37 +1538,38 @@ class NotificationService(
                         report_lines.append(f"**📢 {labels['latest_news_label']}**: {intel['latest_news']}")
                     report_lines.append("")
 
-                # ========== 核心结论 ==========
-                core = dashboard.get('core_conclusion', {}) if dashboard else {}
-                one_sentence = core.get('one_sentence', result.analysis_summary)
-                time_sense = core.get('time_sensitivity', labels['default_time_sensitivity'])
-                pos_advice = core.get('position_advice', {})
+                if not has_investor_brief:
+                    # ========== 核心结论 ==========
+                    core = dashboard.get('core_conclusion', {}) if dashboard else {}
+                    one_sentence = core.get('one_sentence', result.analysis_summary)
+                    time_sense = core.get('time_sensitivity', labels['default_time_sensitivity'])
+                    pos_advice = core.get('position_advice', {})
 
-                report_lines.extend([
-                    f"### 📌 {labels['core_conclusion_heading']}",
-                    "",
-                    f"**{signal_emoji} {signal_text}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
-                    "",
-                    f"> **{labels['one_sentence_label']}**: {one_sentence}",
-                    "",
-                    f"⏰ **{labels['time_sensitivity_label']}**: {time_sense}",
-                    "",
-                ])
-                # 持仓分类建议
-                if pos_advice:
                     report_lines.extend([
-                        f"| {labels['position_status_label']} | {labels['action_advice_label']} |",
-                        "|---------|---------|",
-                        f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))} |",
-                        f"| 💼 **{labels['has_position_label']}** | {pos_advice.get('has_position', labels['continue_holding'])} |",
+                        f"### 📌 {labels['core_conclusion_heading']}",
+                        "",
+                        f"**{signal_emoji} {signal_text}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
+                        "",
+                        f"> **{labels['one_sentence_label']}**: {one_sentence}",
+                        "",
+                        f"⏰ **{labels['time_sensitivity_label']}**: {time_sense}",
                         "",
                     ])
+                    # 持仓分类建议
+                    if pos_advice:
+                        report_lines.extend([
+                            f"| {labels['position_status_label']} | {labels['action_advice_label']} |",
+                            "|---------|---------|",
+                            f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))} |",
+                            f"| 💼 **{labels['has_position_label']}** | {pos_advice.get('has_position', labels['continue_holding'])} |",
+                            "",
+                        ])
 
-                _append_factor_decision_block(
-                    report_lines,
-                    dashboard.get("factor_decision") if dashboard else None,
-                    report_language,
-                )
+                    _append_factor_decision_block(
+                        report_lines,
+                        factor_decision,
+                        report_language,
+                    )
                 self._append_market_snapshot(report_lines, result)
 
                 # ========== 数据透视 ==========

@@ -164,9 +164,20 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
         "",
     ])
 
+    explanation_status = factor.get("explanation_status") if isinstance(factor, dict) else None
+    if (
+        isinstance(explanation_status, dict)
+        and explanation_status.get("state") == "UNAVAILABLE"
+        and explanation_status.get("mode") == "DETERMINISTIC_DEGRADED"
+    ):
+        lines.append("**解释层**: LLM 暂不可用；本报告仅依据已证明的确定性证据生成。")
+
     score = factor.get("composite_score") if isinstance(factor, dict) else None
     if isinstance(score, (int, float)):
-        lines.append(f"**综合评分**: {int(round(score))}/100（用于排序和解释，不代表胜率或概率）")
+        lines.append(
+            f"**技术参考分**: {int(round(score))}/100"
+            "（仅作现有技术排序/解释，不代表独立证据投票、胜率或概率）"
+        )
 
     current_price = brief.get("current_price") or {}
     if isinstance(current_price, dict):
@@ -212,12 +223,28 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
     coverage = brief.get("coverage") or {}
     if isinstance(coverage, dict):
         coverage_parts = []
-        for label, key in (("月线", "monthly"), ("周线", "weekly"), ("日线", "daily"), ("60m", "60m"), ("30m", "30m")):
+        for label, key in (
+            ("月线", "monthly"),
+            ("周线", "weekly"),
+            ("日线", "daily"),
+            ("60m", "60m"),
+            ("30m", "30m"),
+            ("15m", "15m"),
+            ("5m", "5m"),
+        ):
             value = str(coverage.get(key) or "").strip()
             if value:
                 coverage_parts.append(f"{label} {value}")
         if coverage_parts:
             lines.append(f"**周期覆盖**: {'｜'.join(coverage_parts)}")
+
+    scenario = brief.get("scenario") or {}
+    if isinstance(scenario, dict):
+        alternative = scenario.get("alternative") or {}
+        if isinstance(alternative, dict) and alternative.get("status") == "READY":
+            condition = str(alternative.get("condition") or "").strip()
+            if condition:
+                lines.append(f"**备选情景**: {condition}")
 
     historical = brief.get("historical_reference") or {}
     if isinstance(historical, dict) and historical:
@@ -252,6 +279,33 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
     if rendered_risks:
         lines.append("**主要风险**:")
         lines.extend(f"- {item}" for item in rendered_risks)
+
+    timeframe_thesis = brief.get("timeframe_thesis") or {}
+    timeframe_details = []
+    if isinstance(timeframe_thesis, dict):
+        for label, key in (
+            ("月线", "monthly"),
+            ("周线", "weekly"),
+            ("日线", "daily"),
+            ("60m", "60m"),
+        ):
+            item = timeframe_thesis.get(key) or {}
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip()
+            summary_text = str(item.get("summary") or "").strip()
+            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
+                timeframe_details.append(f"{label}：{summary_text}")
+    if timeframe_details:
+        lines.append("")
+        lines.append("**多周期量价与形态**:")
+        lines.extend(f"- {item}" for item in timeframe_details)
+
+    short_term = brief.get("short_term_execution_panel") or {}
+    if isinstance(short_term, dict) and short_term.get("status") == "READY":
+        short_summary = str(short_term.get("summary") or "").strip()
+        if short_summary:
+            lines.append(f"**短线波段 30/15/5m**: {short_summary}")
 
     lines.append("")
     return True

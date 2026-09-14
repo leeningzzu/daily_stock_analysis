@@ -93,6 +93,7 @@ from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
+    canonical_explanation_degradation_eligible,
 )
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -871,6 +872,10 @@ class StockAnalysisPipeline:
                     trend_result=trend_result,
                     fundamental_context=fundamental_context,
                     chip_data=chip_data,
+                )
+                self._promote_p0_deterministic_result_after_explanation_failure(
+                    result,
+                    code=code,
                 )
 
             # Step 8: 保存分析历史记录
@@ -2196,6 +2201,41 @@ class StockAnalysisPipeline:
         if self.p0_bounded_trial:
             apply_canonical_decision_to_result(result, summary)
             assert_canonical_consumer_consistency(result)
+
+    def _promote_p0_deterministic_result_after_explanation_failure(
+        self,
+        result: Optional[AnalysisResult],
+        *,
+        code: str,
+    ) -> bool:
+        """Allow a proven P0 deterministic result to survive explanation-only failure."""
+        if not self.p0_bounded_trial or result is None or bool(getattr(result, "success", False)):
+            return False
+        dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+        summary = dashboard.get("factor_decision")
+        if not canonical_explanation_degradation_eligible(summary):
+            return False
+
+        explanation_status = {
+            "state": "UNAVAILABLE",
+            "mode": "DETERMINISTIC_DEGRADED",
+            "reason": "LLM_EXPLANATION_UNAVAILABLE",
+        }
+        summary["explanation_status"] = dict(explanation_status)
+        investor_brief = summary.get("investor_brief")
+        if isinstance(investor_brief, dict):
+            investor_brief["explanation_status"] = dict(explanation_status)
+        dashboard["explanation_status"] = dict(explanation_status)
+
+        result.success = True
+        result.error_message = None
+        apply_canonical_decision_to_result(result, summary)
+        assert_canonical_consumer_consistency(result)
+        logger.warning(
+            "[%s] LLM explanation unavailable; continuing with proven deterministic P0 evidence only",
+            code,
+        )
+        return True
 
     @staticmethod
     def _refresh_decision_action_for_final_result(

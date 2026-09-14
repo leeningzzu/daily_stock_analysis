@@ -7,6 +7,7 @@ from src.services.factor_decision_summary import (
     apply_canonical_decision_to_result,
     assert_canonical_consumer_consistency,
     build_stock_factor_decision_summary,
+    canonical_explanation_degradation_eligible,
 )
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, VolumeStatus
 
@@ -278,12 +279,34 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         "daily": "PARTIAL_CURRENT",
         "60m": "MISSING",
         "30m": "MISSING",
+        "15m": "MISSING",
+        "5m": "MISSING",
     }
     assert "\u5f53\u524d\u4ef7 10.50 \u5143" in brief["fused_paragraph"]
     assert brief["historical_reference"]["available"] is False
     assert brief["current_probability"]["available"] is False
     assert brief["key_levels"]["support_label"] == "结构支撑"
     assert brief["key_levels"]["resistance_label"] == "结构压力"
+    assert brief["timeframe_thesis"]["daily"]["role"] == "PRIMARY_SETUP"
+    assert brief["short_term_execution_panel"] == {
+        "status": "MISSING",
+        "state": "DATA_INSUFFICIENT",
+        "30m": {"status": "MISSING", "role": "PRIMARY_STRUCTURE"},
+        "15m": {"status": "MISSING", "role": "TRIGGER_CONFIRMATION"},
+        "5m": {"status": "MISSING", "role": "MICRO_TIMING"},
+        "summary": None,
+    }
+    assert brief["scenario"]["preferred"]["status"] == "READY"
+    assert brief["scenario"]["alternative"]["status"] == "MISSING"
+    assert brief["scenario"]["invalidation"]["status"] == "READY"
+    assert (
+        brief["evidence_policy"]["legacy_signal_score_role"]
+        == "REFERENCE_ONLY_NOT_CANONICAL_VOTE_COUNT"
+    )
+    assert (
+        brief["evidence_policy"]["correlation_rule"]
+        == "SAME_UNDERLYING_SWING_ONE_FAMILY_CONFIRMATION_OR_CONFLICT"
+    )
 
 
 def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
@@ -320,3 +343,34 @@ def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
     assert brief["historical_reference"].get("n") is None
     assert brief["current_probability"]["available"] is False
     assert brief["current_probability"].get("value") is None
+
+
+
+def test_explanation_degradation_requires_proven_canonical_evidence_and_valid_brief():
+    proven = build_stock_factor_decision_summary(_trend(), include_canonical=True)
+    assert canonical_explanation_degradation_eligible(proven) is True
+
+    unknown = build_stock_factor_decision_summary(None, include_canonical=True)
+    assert canonical_explanation_degradation_eligible(unknown) is False
+
+    missing_brief = dict(proven)
+    missing_brief["investor_brief"] = None
+    assert canonical_explanation_degradation_eligible(missing_brief) is False
+
+
+def test_lower_timeframe_schema_cannot_override_higher_level_canonical_veto():
+    summary = build_stock_factor_decision_summary(
+        _trend(trend_status=_enum("空头排列")),
+        include_canonical=True,
+    )
+    assert summary["canonical_decision"]["action"] == "PASS"
+    brief = summary["investor_brief"]
+    brief["short_term_execution_panel"] = {
+        "status": "READY",
+        "state": "TRIGGERED",
+        "30m": {"status": "READY", "role": "PRIMARY_STRUCTURE"},
+        "15m": {"status": "READY", "role": "TRIGGER_CONFIRMATION"},
+        "5m": {"status": "READY", "role": "MICRO_TIMING"},
+        "summary": "低周期转强，仅作时点。",
+    }
+    assert summary["canonical_decision"]["action"] == "PASS"

@@ -34,7 +34,10 @@
 
 {{ investor_brief.get('fused_paragraph') }}
 
-{% if factor_decision.get('composite_score') is number %}**综合评分**: {{ factor_decision.get('composite_score')|round|int }}/100（用于排序和解释，不代表胜率或概率）
+{% set explanation_status = factor_decision.get('explanation_status') or {} %}
+{% if explanation_status.get('state') == 'UNAVAILABLE' and explanation_status.get('mode') == 'DETERMINISTIC_DEGRADED' %}**解释层**: LLM 暂不可用；本报告仅依据已证明的确定性证据生成。
+{% endif %}
+{% if factor_decision.get('composite_score') is number %}**技术参考分**: {{ factor_decision.get('composite_score')|round|int }}/100（仅作现有技术排序/解释，不代表独立证据投票、胜率或概率）
 {% endif %}
 {% set current_price = investor_brief.get('current_price') or {} %}
 {% if current_price.get('value') is not none and current_price.get('value') != '' %}**当前价格**: {{ current_price.get('value') }}
@@ -50,7 +53,11 @@
 {% if investor_brief.get('invalidation') %}**失效条件**: {{ investor_brief.get('invalidation') }}
 {% endif %}
 {% set coverage = investor_brief.get('coverage') or {} %}
-{% if coverage %}**周期覆盖**: 月线 {{ coverage.get('monthly', 'MISSING') }}｜周线 {{ coverage.get('weekly', 'MISSING') }}｜日线 {{ coverage.get('daily', 'MISSING') }}｜60m {{ coverage.get('60m', 'MISSING') }}｜30m {{ coverage.get('30m', 'MISSING') }}
+{% if coverage %}**周期覆盖**: 月线 {{ coverage.get('monthly', 'MISSING') }}｜周线 {{ coverage.get('weekly', 'MISSING') }}｜日线 {{ coverage.get('daily', 'MISSING') }}｜60m {{ coverage.get('60m', 'MISSING') }}｜30m {{ coverage.get('30m', 'MISSING') }}｜15m {{ coverage.get('15m', 'MISSING') }}｜5m {{ coverage.get('5m', 'MISSING') }}
+{% endif %}
+{% set scenario = investor_brief.get('scenario') or {} %}
+{% set alternative = scenario.get('alternative') or {} %}
+{% if alternative.get('status') == 'READY' and alternative.get('condition') %}**备选情景**: {{ alternative.get('condition') }}
 {% endif %}
 {% set historical_reference = investor_brief.get('historical_reference') or {} %}
 {% if historical_reference and historical_reference.get('available') == false %}**历史参考胜率**: 暂不提供{% if historical_reference.get('reason') %}（{{ historical_reference.get('reason') }}）{% endif %}
@@ -62,6 +69,24 @@
 {% if investor_brief.get('risk_notes') %}**主要风险**:
 {% for item in investor_brief.get('risk_notes')[:2] %}- {{ item }}
 {% endfor %}
+{% endif %}
+{% set timeframe_thesis = investor_brief.get('timeframe_thesis') or {} %}
+{% set monthly_thesis = timeframe_thesis.get('monthly') or {} %}
+{% set weekly_thesis = timeframe_thesis.get('weekly') or {} %}
+{% set daily_thesis = timeframe_thesis.get('daily') or {} %}
+{% set bridge_thesis = timeframe_thesis.get('60m') or {} %}
+{% if (monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary')) or (weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary')) or (daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary')) or (bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary')) %}**多周期量价与形态**:
+{% if monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary') %}- 月线：{{ monthly_thesis.get('summary') }}
+{% endif %}
+{% if weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary') %}- 周线：{{ weekly_thesis.get('summary') }}
+{% endif %}
+{% if daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary') %}- 日线：{{ daily_thesis.get('summary') }}
+{% endif %}
+{% if bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary') %}- 60m：{{ bridge_thesis.get('summary') }}
+{% endif %}
+{% endif %}
+{% set short_term = investor_brief.get('short_term_execution_panel') or {} %}
+{% if short_term.get('status') == 'READY' and short_term.get('summary') %}**短线波段 30/15/5m**: {{ short_term.get('summary') }}
 {% endif %}
 
 {% endif %}

@@ -225,6 +225,50 @@ def test_p0_transport_failure_is_not_retried_or_fallback_dispatched():
     assert analyzer.p0_model_request_count == 1
 
 
+def test_p0_failed_explanation_promotes_only_proven_deterministic_result():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = True
+    result = _canonical_result("600519")
+    result.success = False
+    result.error_message = "provider unavailable"
+
+    assert pipeline._promote_p0_deterministic_result_after_explanation_failure(
+        result,
+        code="600519",
+    ) is True
+    assert result.success is True
+    assert result.error_message is None
+    factor = result.dashboard["factor_decision"]
+    assert factor["canonical_decision"]["evidence_state"] == "PROVEN"
+    assert factor["explanation_status"] == {
+        "state": "UNAVAILABLE",
+        "mode": "DETERMINISTIC_DEGRADED",
+        "reason": "LLM_EXPLANATION_UNAVAILABLE",
+    }
+    assert factor["investor_brief"]["explanation_status"] == factor["explanation_status"]
+    assert result.action == factor["canonical_decision"]["public_action"]
+
+
+def test_p0_failed_explanation_does_not_promote_unknown_deterministic_evidence():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_bounded_trial = True
+    result = _canonical_result("600519")
+    unknown = build_stock_factor_decision_summary(None, include_canonical=True)
+    result.dashboard["factor_decision"] = unknown
+    apply_canonical_decision_to_result(result, unknown)
+    result.success = False
+    result.error_message = "provider unavailable"
+
+    assert pipeline._promote_p0_deterministic_result_after_explanation_failure(
+        result,
+        code="600519",
+    ) is False
+    assert result.success is False
+    assert result.error_message == "provider unavailable"
+    assert result.dashboard["factor_decision"]["canonical_decision"]["evidence_state"] == "UNKNOWN"
+    assert "explanation_status" not in result.dashboard["factor_decision"]
+
+
 def test_p0_message_byte_ceiling_fails_before_dispatch():
     analyzer = _bounded_analyzer()
 

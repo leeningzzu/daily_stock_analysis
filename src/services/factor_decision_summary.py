@@ -501,8 +501,34 @@ def assert_canonical_consumer_consistency(result: Any) -> None:
         raise ValueError("canonical consumer conflict: " + ", ".join(conflicts))
 
 
+def canonical_explanation_degradation_eligible(summary: Any) -> bool:
+    """Return True only when P0 deterministic evidence can stand without LLM prose."""
+    if not isinstance(summary, dict):
+        return False
+    decision = summary.get("canonical_decision")
+    brief = summary.get("investor_brief")
+    if not isinstance(decision, dict) or not isinstance(brief, dict):
+        return False
+    if decision.get("authority") != _CANONICAL_AUTHORITY:
+        return False
+    if decision.get("evidence_state") != "PROVEN":
+        return False
+    if decision.get("action") not in {"WAIT", "PASS"}:
+        return False
+    if decision.get("public_action") not in {"watch", "avoid"}:
+        return False
+    if _safe_float(summary.get("composite_score")) is None:
+        return False
+    if brief.get("schema_version") != "investor-brief-v1":
+        return False
+    if not str(brief.get("one_line_conclusion") or "").strip():
+        return False
+    if not str(brief.get("fused_paragraph") or "").strip():
+        return False
+    return True
 
-# ASSET_RESEARCH_BRIEF_PAYLOAD_V1_R002
+
+# ASSET_RESEARCH_BRIEF_PAYLOAD_V1_R003
 def _asset_brief_v1_num(value):
     try:
         if value is None:
@@ -620,6 +646,13 @@ def _build_asset_research_brief_v1(trend_result, summary):
         if len(clauses) >= 4:
             break
 
+    daily_components = [
+        item
+        for item in (trend, volume_price, structure, momentum)
+        if _asset_brief_v1_usable(item)
+    ]
+    daily_thesis = "\uff1b".join(daily_components[:3]) or None
+
     paragraph = "\uff1b".join(clauses[:4]).strip()
     if paragraph:
         paragraph += "\u3002"
@@ -635,12 +668,52 @@ def _build_asset_research_brief_v1(trend_result, summary):
             "daily": "PARTIAL_CURRENT",
             "60m": "MISSING",
             "30m": "MISSING",
+            "15m": "MISSING",
+            "5m": "MISSING",
         },
         "coverage_text": (
             "\u5f53\u524d\u8bc1\u636e\u8986\u76d6\uff1a\u65e5\u7ebf\u5df2\u5206\u6790\uff1b"
-            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u548c30\u5206\u949f"
+            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u300130\u5206\u949f\u300115\u5206\u949f\u548c5\u5206\u949f"
             "\u5c1a\u672a\u8fdb\u5165\u751f\u4ea7\u5224\u65ad\u3002"
         ),
+        "timeframe_thesis": {
+            "monthly": {"status": "MISSING", "role": "LONG_TERM_CONTEXT", "summary": None},
+            "weekly": {"status": "MISSING", "role": "PRIMARY_TREND_CONTEXT", "summary": None},
+            "daily": {
+                "status": "PARTIAL_CURRENT",
+                "role": "PRIMARY_SETUP",
+                "summary": daily_thesis,
+            },
+            "60m": {"status": "MISSING", "role": "OPTIONAL_BRIDGE", "summary": None},
+        },
+        "short_term_execution_panel": {
+            "status": "MISSING",
+            "state": "DATA_INSUFFICIENT",
+            "30m": {"status": "MISSING", "role": "PRIMARY_STRUCTURE"},
+            "15m": {"status": "MISSING", "role": "TRIGGER_CONFIRMATION"},
+            "5m": {"status": "MISSING", "role": "MICRO_TIMING"},
+            "summary": None,
+        },
+        "scenario": {
+            "preferred": {
+                "status": "READY" if trigger else "MISSING",
+                "condition": trigger or None,
+            },
+            "alternative": {
+                "status": "MISSING",
+                "condition": None,
+                "reason": "尚未形成独立确定性备选情景。",
+            },
+            "invalidation": {
+                "status": "READY" if invalidation else "MISSING",
+                "condition": invalidation or None,
+            },
+        },
+        "evidence_policy": {
+            "legacy_signal_score_role": "REFERENCE_ONLY_NOT_CANONICAL_VOTE_COUNT",
+            "correlation_rule": "SAME_UNDERLYING_SWING_ONE_FAMILY_CONFIRMATION_OR_CONFLICT",
+            "timeframe_rule": "CROSS_TIMEFRAME_CONFIRMATION_NOT_INDEPENDENT_VOTES",
+        },
         "canonical": canonical,
         "one_line_conclusion": conclusion,
         "fused_paragraph": paragraph,
@@ -746,7 +819,10 @@ def build_stock_factor_decision_summary(
         "strategy_id": "stock_trend_quality_pullback_v1",
         "contract_version": "1.0",
         "composite_score": score,
-        "score_note": "沿用现有确定性技术规则，用于排序和解释，不代表胜率或概率。",
+        "score_note": (
+            "现有技术参考分，仅用于排序和解释；不作为 canonical 独立证据投票，"
+            "也不代表胜率或概率。"
+        ),
         "historical_reference": {
             "available": False,
             "display": "样本不足，暂不展示",

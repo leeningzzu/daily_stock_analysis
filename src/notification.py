@@ -193,10 +193,12 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
         support = key_levels.get("support")
         resistance = key_levels.get("resistance")
         level_parts = []
+        support_label = str(key_levels.get("support_label") or "结构支撑").strip()
+        resistance_label = str(key_levels.get("resistance_label") or "结构压力").strip()
         if isinstance(support, (int, float)) or str(support or "").strip():
-            level_parts.append(f"支撑 {support}")
+            level_parts.append(f"{support_label} {support}")
         if isinstance(resistance, (int, float)) or str(resistance or "").strip():
-            level_parts.append(f"压力 {resistance}")
+            level_parts.append(f"{resistance_label} {resistance}")
         if level_parts:
             lines.append(f"**关键位置**: {'｜'.join(level_parts)}")
 
@@ -1507,7 +1509,7 @@ class NotificationService(
 
                 # ========== 舆情与基本面概览（放在最前面）==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
-                if intel:
+                if intel and not has_investor_brief:
                     report_lines.extend([
                         f"### 📰 {labels['info_heading']}",
                         "",
@@ -1608,10 +1610,13 @@ class NotificationService(
                             f"| {labels['ma10_label']} | {price_data.get('ma10', 'N/A')} |",
                             f"| {labels['ma20_label']} | {price_data.get('ma20', 'N/A')} |",
                             f"| {labels['bias_ma5_label']} | {price_data.get('bias_ma5', 'N/A')}% {bias_status} |",
-                            f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
-                            f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
-                            "",
                         ])
+                        if not has_investor_brief:
+                            report_lines.extend([
+                                f"| {labels['support_level_label']} | {price_data.get('support_level', 'N/A')} |",
+                                f"| {labels['resistance_level_label']} | {price_data.get('resistance_level', 'N/A')} |",
+                            ])
+                        report_lines.append("")
                     # 量能分析
                     if vol_data:
                         report_lines.extend([
@@ -1687,7 +1692,7 @@ class NotificationService(
 
                 # ========== 信号归因分析 ==========
                 signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
-                if signal_attribution_has_content(signal_attr):
+                if signal_attribution_has_content(signal_attr) and not has_investor_brief:
                     report_lines.extend([
                         f"### 🎯 {labels['signal_attribution_heading']}",
                         "",

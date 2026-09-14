@@ -57,12 +57,14 @@ def test_summary_reuses_existing_score_without_inventing_probability_or_win_rate
     }
     assert "不代表胜率或概率" in summary["score_note"]
     assert "canonical_decision" not in summary
-    assert "未显示明显高估" in summary["valuation"]
+    assert "PE 20.0" in summary["valuation"]
+    assert "PB 3.0" in summary["valuation"]
+    assert "暂不判断偏低、合理或偏高" in summary["valuation"]
     assert "筹码平均成本参考约 10.00" in summary["cost_structure"]
     assert "主力" not in str(summary)
 
 
-def test_high_static_valuation_is_reference_not_precise_intrinsic_value():
+def test_static_pe_pb_without_percentile_or_peers_does_not_claim_relative_valuation():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68),
         fundamental_context={
@@ -71,8 +73,12 @@ def test_high_static_valuation_is_reference_not_precise_intrinsic_value():
         },
     )
 
-    assert "静态估值偏高" in summary["valuation"]
-    assert "仅作参考" in summary["valuation"]
+    assert "PE 75.0" in summary["valuation"]
+    assert "PB 9.0" in summary["valuation"]
+    assert "缺少可靠历史分位和同行比较" in summary["valuation"]
+    assert "暂不判断偏低、合理或偏高" in summary["valuation"]
+    assert "静态估值偏高" not in summary["valuation"]
+    assert "历史相对低位" not in summary["valuation"]
     assert "合理价值" not in summary["valuation"]
     assert "内在价值" not in summary["valuation"]
 
@@ -276,6 +282,8 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
     assert "\u5f53\u524d\u4ef7 10.50 \u5143" in brief["fused_paragraph"]
     assert brief["historical_reference"]["available"] is False
     assert brief["current_probability"]["available"] is False
+    assert brief["key_levels"]["support_label"] == "结构支撑"
+    assert brief["key_levels"]["resistance_label"] == "结构压力"
 
 
 def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
@@ -301,7 +309,12 @@ def test_asset_research_brief_payload_v1_missing_values_are_not_invented():
     )
 
     assert brief["current_price"]["source_state"] == "MISSING"
-    assert brief["key_levels"] == {"support": None, "resistance": None}
+    assert brief["key_levels"] == {
+        "support": None,
+        "resistance": None,
+        "support_label": "结构支撑",
+        "resistance_label": "结构压力",
+    }
     assert brief["valuation"]["status"] == "MISSING"
     assert brief["historical_reference"]["available"] is False
     assert brief["historical_reference"].get("n") is None

@@ -43,7 +43,7 @@
 {% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**估值**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
 {% endif %}
 {% set key_levels = investor_brief.get('key_levels') or {} %}
-{% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}支撑 {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}压力 {{ key_levels.get('resistance') }}{% endif %}
+{% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}{{ key_levels.get('support_label', '结构支撑') }} {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}{{ key_levels.get('resistance_label', '结构压力') }} {{ key_levels.get('resistance') }}{% endif %}
 {% endif %}
 {% if investor_brief.get('trigger') %}**触发条件**: {{ investor_brief.get('trigger') }}
 {% endif %}
@@ -65,7 +65,7 @@
 {% endif %}
 
 {% endif %}
-{% if intel %}
+{% if intel and not investor_brief_valid %}
 ### 📰 {{ labels.info_heading }}
 
 {% if intel.get('sentiment_summary') %}
@@ -168,8 +168,9 @@
 | {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
 | {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
 | {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
-| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
+{% if not investor_brief_valid %}| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
 | {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
+{% endif %}
 {% endif %}
 
 {% set vol_data = data_persp.get('volume_analysis', {}) %}
@@ -221,7 +222,7 @@
 
 {% set signal_attr = dashboard.get('signal_attribution') or {} %}
 {% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
-{% if signal_attribution_has_content(signal_attr) %}
+{% if signal_attribution_has_content(signal_attr) and not investor_brief_valid %}
 ### 🎯 {{ labels.signal_attribution_heading }}
 
 {% if signal_attr_weights %}

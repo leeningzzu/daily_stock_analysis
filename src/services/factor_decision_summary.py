@@ -87,25 +87,17 @@ def _valuation_summary(fundamental_context: Any) -> str:
 
     if pe is None and pb is None:
         return "估值：数据不足，暂不判断高低。"
-    if market and market != "cn":
-        suffix = f"（{metrics}）" if metrics else ""
-        return f"估值：已取得基础估值数据{suffix}，首版不使用统一阈值跨市场判断高低。"
 
-    high = (pe is not None and pe > 60) or (pb is not None and pb > 8)
-    moderate = (
-        pe is not None
-        and pe > 0
-        and pe <= 25
-        and pb is not None
-        and pb > 0
-        and pb <= 4
-    )
     suffix = f"（{metrics}）" if metrics else ""
-    if high:
-        return f"估值：静态估值偏高{suffix}，需要更强的盈利增长兑现；仅作参考。"
-    if moderate:
-        return f"估值：当前 PE/PB 未显示明显高估{suffix}；是否低估仍需结合历史分位和同行。"
-    return f"估值：当前静态估值大致处于中间区域{suffix}；需结合历史分位和同行。"
+    if market and market != "cn":
+        return (
+            f"估值：已取得基础估值数据{suffix}；"
+            "缺少可靠历史分位和同行比较，首版暂不判断偏低、合理或偏高。"
+        )
+    return (
+        f"估值：已取得基础估值数据{suffix}；"
+        "缺少可靠历史分位和同行比较，暂不判断偏低、合理或偏高。"
+    )
 
 
 def _cost_structure_summary(chip_data: Any) -> str:
@@ -659,6 +651,8 @@ def _build_asset_research_brief_v1(trend_result, summary):
         "key_levels": {
             "support": _asset_brief_v1_price(support),
             "resistance": _asset_brief_v1_price(resistance),
+            "support_label": "结构支撑",
+            "resistance_label": "结构压力",
         },
         "trigger": trigger,
         "invalidation": invalidation,

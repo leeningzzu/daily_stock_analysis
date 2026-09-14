@@ -840,6 +840,32 @@ def _sanitize_trend_analysis_for_prompt(
     return trend_dict
 
 
+def _bind_execution_owned_intelligence(
+    result: "AnalysisResult",
+    news_context: Optional[str],
+) -> None:
+    """Bind news/search evidence to execution state instead of LLM self-report.
+
+    ``search_performed`` is an execution fact. When no news context was
+    actually supplied, LLM-generated intelligence has no bound source and must
+    not survive as factual report evidence. Keep an empty risk-alert list so
+    the existing integrity schema remains structurally valid without another
+    LLM request or judge.
+    """
+    has_news_context = bool(str(news_context or "").strip())
+    result.search_performed = has_news_context
+    if has_news_context:
+        return
+
+    result.news_summary = ""
+    result.market_sentiment = ""
+    result.hot_topics = ""
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
+    if dashboard is not None:
+        dashboard["intelligence"] = {"risk_alerts": []}
+
+
 def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
     """Derive chip_health from profit_ratio and concentration_90."""
     if profit_ratio >= 0.9:
@@ -3773,7 +3799,7 @@ class GeminiAnalyzer:
                 # 解析响应
                 result = self._parse_response(response_text, code, name)
                 result.raw_response = response_text
-                result.search_performed = bool(news_context)
+                _bind_execution_owned_intelligence(result, news_context)
                 result.market_snapshot = self._build_market_snapshot(context)
                 result.model_used = model_used
                 result.report_language = report_language
@@ -4253,6 +4279,15 @@ class GeminiAnalyzer:
         else:
             prompt += """
 未搜索到该股票近期的相关新闻。请主要依据技术面数据进行分析。
+
+**无新闻证据硬约束**：
+- `search_performed` 必须为 false；
+- `dashboard.intelligence.latest_news` 必须为空字符串；
+- `dashboard.intelligence.risk_alerts` 必须为空数组；
+- `dashboard.intelligence.positive_catalysts` 必须为空数组；
+- `dashboard.intelligence.earnings_outlook` 与 `sentiment_summary` 必须为空字符串；
+- `news_summary`、`market_sentiment`、`hot_topics` 必须为空字符串；
+- 未提供历史估值分位或同行比较时，禁止声称“历史低位/合理区间/相对便宜”等相对估值结论。
 """
 
         # 注入缺失数据警告

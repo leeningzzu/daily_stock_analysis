@@ -907,7 +907,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("**综合评分**: 43/100", out)
         self.assertIn("**当前价格**: 1450.0", out)
         self.assertIn("**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）", out)
-        self.assertIn("**关键位置**: 支撑 1400.0｜压力 1500.0", out)
+        self.assertIn("**关键位置**: 结构支撑 1400.0｜结构压力 1500.0", out)
         self.assertIn("**周期覆盖**: 月线 MISSING｜周线 MISSING｜日线 PROVEN_CURRENT｜60m MISSING｜30m MISSING", out)
         self.assertIn("**历史参考胜率**: 暂不提供（尚未完成 PIT 同策略验证）", out)
         self.assertIn("**当前机会概率**: 暂不提供（尚未完成独立校准）", out)
@@ -944,8 +944,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "**当前价格**: 1450.0",
             "合理",
             "PE/PB 仅作保守参考",
-            "支撑 1400.0",
-            "压力 1500.0",
+            "结构支撑 1400.0",
+            "结构压力 1500.0",
             "重新站上 1500 且放量确认",
             "跌破 1400 且放量",
             "月线 MISSING",
@@ -970,6 +970,58 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             self.assertNotIn("旧因子结论（不得重复）", output)
             self.assertNotIn("### 📌 核心结论", output)
             self.assertNotIn("### 🧭 综合评估", output)
+
+    @mock.patch("src.notification.get_config")
+    def test_asset_investor_brief_suppresses_unbound_llm_evidence_panels_and_generic_levels(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        result.dashboard["intelligence"] = {
+            "sentiment_summary": "UNBOUND_NEWS_SENTIMENT",
+            "earnings_outlook": "UNBOUND_EARNINGS_OUTLOOK",
+            "risk_alerts": ["UNBOUND_INTEL_RISK"],
+            "positive_catalysts": ["UNBOUND_VALUATION_CATALYST"],
+            "latest_news": "UNBOUND_LATEST_NEWS",
+        }
+        result.dashboard["signal_attribution"] = {
+            "technical_indicators": 20,
+            "news_sentiment": 30,
+            "fundamentals": 30,
+            "market_conditions": 20,
+            "strongest_bullish_signal": "UNBOUND_HISTORICAL_VALUATION",
+            "strongest_bearish_signal": "UNBOUND_BEARISH_SIGNAL",
+        }
+        result.dashboard["data_perspective"] = {
+            "price_position": {
+                "current_price": 1450.0,
+                "ma5": 1451.0,
+                "ma10": 1448.0,
+                "ma20": 1440.0,
+                "bias_ma5": -0.07,
+                "bias_status": "安全",
+                "support_level": 1399.0,
+                "resistance_level": 1499.0,
+            }
+        }
+
+        for enabled in (False, True):
+            with self.subTest(report_renderer_enabled=enabled):
+                mock_get_config.return_value = _make_config(report_renderer_enabled=enabled)
+                out = NotificationService().generate_dashboard_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+                self.assertIn("结构支撑 1400.0", out)
+                self.assertIn("结构压力 1500.0", out)
+                self.assertNotIn("UNBOUND_NEWS_SENTIMENT", out)
+                self.assertNotIn("UNBOUND_EARNINGS_OUTLOOK", out)
+                self.assertNotIn("UNBOUND_INTEL_RISK", out)
+                self.assertNotIn("UNBOUND_VALUATION_CATALYST", out)
+                self.assertNotIn("UNBOUND_LATEST_NEWS", out)
+                self.assertNotIn("UNBOUND_HISTORICAL_VALUATION", out)
+                self.assertNotIn("UNBOUND_BEARISH_SIGNAL", out)
+                self.assertNotIn("| 支撑位 | 1399.0 |", out)
+                self.assertNotIn("| 压力位 | 1499.0 |", out)
 
     @mock.patch("src.notification.get_config")
     def test_asset_investor_brief_missing_preserves_legacy_core_and_factor(

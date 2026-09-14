@@ -279,3 +279,64 @@ def test_target_failure_conflict_or_empty_report_produces_zero_notification(fail
         pipeline._finalize_p0_bounded_run(results, targets, ReportType.SIMPLE)
 
     pipeline.notifier.send_to_email.assert_not_called()
+
+# P0_REPORT_LANGUAGE_CONSUMER_REGRESSION_PY_R001
+import inspect as _pyrec_p0_inspect
+
+from src.report_language import (
+    localize_strategy_synthesis_summary as _pyrec_p0_localize_summary,
+    normalize_strategy_synthesis_payload as _pyrec_p0_normalize_payload,
+)
+
+
+def _pyrec_p0_call_language_aware(fn, value):
+    signature = _pyrec_p0_inspect.signature(fn)
+    parameters = list(signature.parameters.values())
+    required_positionals = [
+        p
+        for p in parameters
+        if p.kind
+        in (
+            _pyrec_p0_inspect.Parameter.POSITIONAL_ONLY,
+            _pyrec_p0_inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        and p.default is _pyrec_p0_inspect.Parameter.empty
+    ]
+
+    if len(required_positionals) <= 1:
+        for p in parameters:
+            if (
+                p.kind == _pyrec_p0_inspect.Parameter.KEYWORD_ONLY
+                and p.name in {"language", "lang"}
+            ):
+                return fn(value, **{p.name: "zh"})
+        return fn(value)
+
+    second = required_positionals[1]
+    if second.name in {"language", "lang"}:
+        return fn(value, "zh")
+
+    raise AssertionError(
+        f"Unexpected consumer signature for {fn.__name__}: {signature}"
+    )
+
+
+def test_p0_report_language_consumer_blocks_legacy_hold_leak():
+    payload = {
+        "authority": "stock_trend_quality_pullback_v1",
+        "canonical_public_action": "avoid",
+        "final_signal": "hold",
+    }
+
+    normalized = _pyrec_p0_normalize_payload(payload)
+    assert payload["final_signal"] == "hold"
+    assert normalized["final_signal"] == "avoid"
+
+    summary = str(
+        _pyrec_p0_call_language_aware(
+            _pyrec_p0_localize_summary,
+            payload,
+        )
+    )
+    assert "\u56de\u907f" in summary
+    assert "\u6301\u6709" not in summary

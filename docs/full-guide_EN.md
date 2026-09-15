@@ -701,7 +701,7 @@ Common time reference:
 - The per-run input neither reads nor overwrites `STOCK_LIST`, and it does not change automatic schedules, watchlists, or AUTO_SCREEN.
 - P0 fixes one worker, non-Agent execution, one model, and non-streaming transport. Each run allows at most two primary model requests with a 4,096-token output ceiling and performs no report-completion retry, model fallback, transport retry, or parameter recovery.
 - P0 does not initialize news or social search; the Tavily/SearXNG and other search-call ceiling is zero.
-- Every target must succeed exactly once. The pipeline then renders one Chinese simple aggregate report and sends that exact string as one Email. Any boundary, target, canonical-consistency, or report failure produces no notification and a non-zero result.
+- Every target must succeed exactly once. The pipeline then renders two projections from the same canonical `AnalysisResult` objects: a detailed audit report for local/Artifact retention and a compact `investor-brief-v1` investor notification for the single Email. They share one canonical evidence/decision authority but are not required to be byte-identical. Any boundary, target, canonical-consistency, or required-projection failure produces no notification and a non-zero result.
 - The deterministic `stock_trend_quality_pullback_v1` `canonical_decision` is the sole public action authority. P0 emits only `WAIT/watch` or `PASS/avoid`; the LLM is explanation-only and cannot create or override BUY/HOLD/EXIT.
 
 For an explicitly authorized manual acceptance run on a non-trading day, `force_run=true` may be used for that `workflow_dispatch` only; it does not alter the automatic schedule's strict trading-day gate.
@@ -977,7 +977,7 @@ Supported email providers:
 - Gmail: smtp.gmail.com:587
 
 **Send different stock groups to different email recipients** (Issue #268, optional):
-Configure `STOCK_GROUP_N` and `EMAIL_GROUP_N` to route different stock groups to different inboxes. `STOCK_LIST` still defines the actual analysis scope, so each `STOCK_GROUP_N` should be a subset of `STOCK_LIST`. This only changes email recipients; Telegram, WeChat, Webhook, and other channels still receive the full report for the entire `STOCK_LIST`. Market review emails are sent to all configured group recipients.
+Configure `STOCK_GROUP_N` and `EMAIL_GROUP_N` to route different stock groups to different inboxes. `STOCK_LIST` still defines the actual analysis scope, so each `STOCK_GROUP_N` should be a subset of `STOCK_LIST`. This only changes email recipients and does not change the asset set on other channels. Asset-research Email/Telegram use the compact investor-notification projection while the detailed audit report is retained separately; WeChat, Webhook, and other channels keep their existing projections. Market review emails are sent to all configured group recipients.
 
 > GitHub Actions limitation: as of 2026-03-29, the repository's default `00-daily-analysis.yml` does not auto-import arbitrary numbered `STOCK_GROUP_N` / `EMAIL_GROUP_N` variables. If you only add them in repository Secrets / Variables without extending the workflow `env:` block, they will not reach the runtime process.
 

@@ -3446,7 +3446,7 @@ class StockAnalysisPipeline:
         stock_codes: List[str],
         report_type: ReportType,
     ) -> str:
-        """Fail closed, render once, then perform exactly one direct Email send."""
+        """Fail closed, save the full audit, then send one compact investor Email."""
         result_codes = [str(getattr(result, "code", "") or "") for result in results]
         if (
             len(results) != len(stock_codes)
@@ -3459,13 +3459,16 @@ class StockAnalysisPipeline:
         for result in results:
             assert_canonical_consumer_consistency(result)
 
-        report = self._generate_aggregate_report(results, report_type)
-        if not isinstance(report, str) or not report.strip():
-            raise P0BoundedTrialError("P0 aggregate report is empty")
-        self.notifier.save_report_to_file(report)
-        if not self.notifier.send_to_email(report):
-            raise P0BoundedTrialError("P0 aggregate Email send failed")
-        return report
+        audit_report = self._generate_aggregate_report(results, report_type)
+        if not isinstance(audit_report, str) or not audit_report.strip():
+            raise P0BoundedTrialError("P0 full audit report is empty")
+        notification_report = self.notifier.generate_brief_report(results)
+        if not isinstance(notification_report, str) or not notification_report.strip():
+            raise P0BoundedTrialError("P0 investor notification report is empty")
+        self.notifier.save_report_to_file(audit_report)
+        if not self.notifier.send_to_email(notification_report):
+            raise P0BoundedTrialError("P0 investor Email send failed")
+        return audit_report
 
     def _send_single_stock_notification(
         self,
@@ -3512,8 +3515,11 @@ class StockAnalysisPipeline:
                     report_content = self.notifier.generate_brief_report([result])
                     logger.info(f"[{stock_code}] 使用简洁报告格式")
                 else:
-                    report_content = self.notifier.generate_single_stock_report(result)
-                    logger.info(f"[{stock_code}] 使用精简报告格式")
+                    report_content = self.notifier.generate_brief_report([result])
+                    logger.info(f"[{stock_code}] 使用投资者简报格式")
+
+                if not isinstance(report_content, str) or not report_content.strip():
+                    raise ValueError("single-stock investor notification projection is empty")
 
                 send_kwargs: Dict[str, Any] = {
                     "email_stock_codes": [stock_code],
@@ -3597,7 +3603,7 @@ class StockAnalysisPipeline:
         try:
             logger.info("生成决策仪表盘日报...")
             report = self._generate_aggregate_report(results, report_type)
-            
+
             # 跳过推送（单股推送模式 / 合并模式：报告已由 _save_local_report 保存）
             if skip_push:
                 notification_run = self._build_notification_run_snapshot(
@@ -3619,6 +3625,14 @@ class StockAnalysisPipeline:
                 return
             
             # 推送通知
+            notification_report = (
+                report
+                if report_type == ReportType.BRIEF
+                else self.notifier.generate_brief_report(results)
+            )
+            if not isinstance(notification_report, str) or not notification_report.strip():
+                raise ValueError("investor notification projection is empty")
+
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
                 channels = self.notifier.get_channels_for_route("report", channels=channels)
@@ -3723,8 +3737,14 @@ class StockAnalysisPipeline:
                     if ch.value in self.notifier._markdown_to_image_channels
                     and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
                 }
-                non_wechat_channels_needing_image = {
-                    ch for ch in channels_needing_image if ch != NotificationChannel.WECHAT
+                compact_image_channels = channels_needing_image & {
+                    NotificationChannel.TELEGRAM,
+                    NotificationChannel.EMAIL,
+                }
+                full_image_channels = channels_needing_image - {
+                    NotificationChannel.WECHAT,
+                    NotificationChannel.TELEGRAM,
+                    NotificationChannel.EMAIL,
                 }
                 single_share_payload = (
                     _share_image_payload(results[0]) if len(results) == 1 else None
@@ -3741,7 +3761,7 @@ class StockAnalysisPipeline:
                     )
 
                 image_bytes = None
-                if non_wechat_channels_needing_image:
+                if full_image_channels:
                     image_kwargs: Dict[str, Any] = {
                         "max_chars": self.notifier._markdown_to_image_max_chars,
                     }
@@ -3750,12 +3770,34 @@ class StockAnalysisPipeline:
                     image_bytes = markdown_to_image(report, **image_kwargs)
                     if image_bytes:
                         logger.info(
-                            "Markdown 已转换为图片，将向 %s 发送图片",
-                            [ch.value for ch in non_wechat_channels_needing_image],
+                            "完整报告 Markdown 已转换为图片，将向 %s 发送图片",
+                            [ch.value for ch in full_image_channels],
                         )
                     else:
                         logger.warning(
-                            "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                            "完整报告 Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                            _get_md2img_hint(),
+                        )
+
+                notification_image_bytes = None
+                if compact_image_channels:
+                    notification_image_kwargs: Dict[str, Any] = {
+                        "max_chars": self.notifier._markdown_to_image_max_chars,
+                    }
+                    if single_share_payload is not None:
+                        notification_image_kwargs["structured_payload"] = single_share_payload
+                    notification_image_bytes = markdown_to_image(
+                        notification_report,
+                        **notification_image_kwargs,
+                    )
+                    if notification_image_bytes:
+                        logger.info(
+                            "投资者简报 Markdown 已转换为图片，将向 %s 发送图片",
+                            [ch.value for ch in compact_image_channels],
+                        )
+                    else:
+                        logger.warning(
+                            "投资者简报 Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
                             _get_md2img_hint(),
                         )
 
@@ -3802,7 +3844,7 @@ class StockAnalysisPipeline:
                         wechat_error,
                     )
 
-                # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
+                # 渠道按既有契约选择投影：Email/Telegram 使用精简投资者简报，其他渠道保留原投影。
                 non_wechat_success = False
                 stock_email_groups = getattr(self.config, 'stock_email_groups', []) or []
                 for channel in channels:
@@ -3832,11 +3874,11 @@ class StockAnalysisPipeline:
                     elif channel == NotificationChannel.TELEGRAM:
                         def _send_telegram_report() -> bool:
                             use_image = self.notifier._should_use_image_for_channel(
-                                channel, image_bytes
+                                channel, notification_image_bytes
                             )
                             if use_image:
-                                return self.notifier._send_telegram_photo(image_bytes)
-                            return self.notifier.send_to_telegram(report)
+                                return self.notifier._send_telegram_photo(notification_image_bytes)
+                            return self.notifier.send_to_telegram(notification_report)
 
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,
@@ -3871,7 +3913,9 @@ class StockAnalysisPipeline:
                                     group_results=group_results,
                                     receivers=receivers,
                                 ) -> bool:
-                                    grp_report = self._generate_aggregate_report(group_results, report_type)
+                                    grp_report = self.notifier.generate_brief_report(group_results)
+                                    if not isinstance(grp_report, str) or not grp_report.strip():
+                                        raise ValueError("email-group investor notification projection is empty")
                                     grp_image_bytes = None
                                     if channel.value in self.notifier._markdown_to_image_channels:
                                         group_payload = (
@@ -3918,12 +3962,12 @@ class StockAnalysisPipeline:
                         else:
                             def _send_email_report() -> bool:
                                 use_image = self.notifier._should_use_image_for_channel(
-                                    channel, image_bytes
+                                    channel, notification_image_bytes
                                 )
                                 if use_image:
-                                    return self.notifier._send_email_with_inline_image(image_bytes)
+                                    return self.notifier._send_email_with_inline_image(notification_image_bytes)
                                 return self.notifier.send_to_email(
-                                    strip_hidden_markdown_metadata(report).strip()
+                                    strip_hidden_markdown_metadata(notification_report).strip()
                                 )
 
                             channel_success, channel_error = _send_channel_safely(

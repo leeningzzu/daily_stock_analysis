@@ -220,23 +220,9 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
     if invalidation:
         lines.append(f"**失效条件**: {invalidation}")
 
-    coverage = brief.get("coverage") or {}
-    if isinstance(coverage, dict):
-        coverage_parts = []
-        for label, key in (
-            ("月线", "monthly"),
-            ("周线", "weekly"),
-            ("日线", "daily"),
-            ("60m", "60m"),
-            ("30m", "30m"),
-            ("15m", "15m"),
-            ("5m", "5m"),
-        ):
-            value = str(coverage.get(key) or "").strip()
-            if value:
-                coverage_parts.append(f"{label} {value}")
-        if coverage_parts:
-            lines.append(f"**周期覆盖**: {'｜'.join(coverage_parts)}")
+    coverage_text = str(brief.get("coverage_text") or "").strip()
+    if coverage_text:
+        lines.append(f"**周期覆盖**: {coverage_text}")
 
     scenario = brief.get("scenario") or {}
     if isinstance(scenario, dict):
@@ -306,6 +292,119 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
         short_summary = str(short_term.get("summary") or "").strip()
         if short_summary:
             lines.append(f"**短线波段 30/15/5m**: {short_summary}")
+
+    lines.append("")
+    return True
+
+
+def _append_investor_notification_block(
+    lines: List[str],
+    factor: Any,
+    report_language: str,
+    *,
+    position_advice: Any = None,
+) -> bool:
+    """Render the compact investor notification projection from canonical brief evidence."""
+    brief = _get_valid_investor_brief(factor, report_language)
+    if brief is None:
+        return False
+
+    one_line = str(brief.get("one_line_conclusion") or "").strip()
+    fused = str(brief.get("fused_paragraph") or "").strip()
+    lines.extend([f"**综合结论**: {one_line}", "", fused, ""])
+
+    explanation_status = factor.get("explanation_status") if isinstance(factor, dict) else None
+    if (
+        isinstance(explanation_status, dict)
+        and explanation_status.get("state") == "UNAVAILABLE"
+        and explanation_status.get("mode") == "DETERMINISTIC_DEGRADED"
+    ):
+        lines.extend([
+            "**解释层**: LLM 暂不可用；以下结论仅依据已证明的确定性证据。",
+            "",
+        ])
+
+    valuation = brief.get("valuation") or {}
+    if isinstance(valuation, dict):
+        valuation_parts = [
+            str(valuation.get("bucket") or "").strip(),
+            str(valuation.get("summary") or "").strip(),
+        ]
+        valuation_parts = [item for item in valuation_parts if item]
+        uncertainty = str(valuation.get("uncertainty") or "").strip()
+        if valuation_parts or uncertainty:
+            valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
+            if uncertainty:
+                valuation_text += f"（不确定性：{uncertainty}）"
+            lines.append(f"**估值**: {valuation_text}")
+
+    coverage_text = str(brief.get("coverage_text") or "").strip()
+    if coverage_text:
+        lines.append(f"**多周期**: {coverage_text}")
+
+    timeframe_thesis = brief.get("timeframe_thesis") or {}
+    timeframe_details = []
+    if isinstance(timeframe_thesis, dict):
+        for label, key in (
+            ("月线", "monthly"),
+            ("周线", "weekly"),
+            ("日线", "daily"),
+            ("60m", "60m"),
+        ):
+            item = timeframe_thesis.get(key) or {}
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip()
+            summary_text = str(item.get("summary") or "").strip()
+            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
+                timeframe_details.append(f"{label}：{summary_text}")
+    if timeframe_details:
+        lines.append(f"**趋势/量价**: {'｜'.join(timeframe_details[:3])}")
+
+    key_levels = brief.get("key_levels") or {}
+    if isinstance(key_levels, dict):
+        support = key_levels.get("support")
+        resistance = key_levels.get("resistance")
+        level_parts = []
+        support_label = str(key_levels.get("support_label") or "结构支撑").strip()
+        resistance_label = str(key_levels.get("resistance_label") or "结构压力").strip()
+        if isinstance(support, (int, float)) or str(support or "").strip():
+            level_parts.append(f"{support_label} {support}")
+        if isinstance(resistance, (int, float)) or str(resistance or "").strip():
+            level_parts.append(f"{resistance_label} {resistance}")
+        if level_parts:
+            lines.append(f"**关键位置**: {'｜'.join(level_parts)}")
+
+    trigger = str(brief.get("trigger") or "").strip()
+    if trigger:
+        lines.append(f"**触发条件**: {trigger}")
+    invalidation = str(brief.get("invalidation") or "").strip()
+    if invalidation:
+        lines.append(f"**失效条件**: {invalidation}")
+
+    if isinstance(position_advice, dict):
+        no_position = str(position_advice.get("no_position") or "").strip()
+        has_position = str(position_advice.get("has_position") or "").strip()
+        action_parts = []
+        if no_position:
+            action_parts.append(f"空仓：{no_position}")
+        if has_position:
+            action_parts.append(f"持仓：{has_position}")
+        if action_parts:
+            lines.append(f"**操作**: {'｜'.join(action_parts)}")
+
+    risk_notes = brief.get("risk_notes") or []
+    rendered_risks = []
+    if isinstance(risk_notes, list):
+        for item in risk_notes:
+            text = str(item or "").strip()
+            if text:
+                rendered_risks.append(text)
+            if len(rendered_risks) >= 2:
+                break
+    if rendered_risks:
+        lines.append("**主要风险**:")
+        lines.extend(f"- {item}" for item in rendered_risks)
 
     lines.append("")
     return True
@@ -2095,7 +2194,7 @@ class NotificationService(
         report_date: Optional[str] = None,
     ) -> str:
         """
-        Generate brief report (3-5 sentences per stock) for mobile/push.
+        Generate the compact investor-first notification projection for mobile/push.
 
         Args:
             results: Analysis results list (use [result] for single stock).
@@ -2135,6 +2234,17 @@ class NotificationService(
             signal_text, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)
             dash = r.dashboard or {}
+            factor = dash.get("factor_decision") or {}
+            if _get_valid_investor_brief(factor, report_language) is not None:
+                lines.extend([f"## {emoji} {name} ({r.code})｜{signal_text}", ""])
+                core = dash.get("core_conclusion") or {}
+                _append_investor_notification_block(
+                    lines,
+                    factor,
+                    report_language,
+                    position_advice=core.get("position_advice") or {},
+                )
+                continue
             core = dash.get('core_conclusion', {}) or {}
             one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
             lines.append(

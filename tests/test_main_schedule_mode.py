@@ -1853,10 +1853,19 @@ class MainScheduleModeTestCase(unittest.TestCase):
             report_type="simple",
         )
         pipeline = MagicMock()
-        pipeline.run.return_value = []
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline.run.return_value = [stock_result]
         pipeline.notifier = MagicMock(
             is_available=MagicMock(return_value=True),
-            generate_aggregate_report=MagicMock(return_value=""),
+            generate_aggregate_report=MagicMock(return_value="legacy full dashboard"),
+            generate_brief_report=MagicMock(return_value="compact investor brief"),
             send=MagicMock(return_value=True),
         )
         pipeline_kwargs = {}
@@ -1917,6 +1926,58 @@ class MainScheduleModeTestCase(unittest.TestCase):
         notifier_message = pipeline.notifier.send.call_args.args[0]
         self.assertIn("## 完整大盘复盘", notifier_message)
         self.assertNotIn("大盘退潮，高风险，建议观望。", notifier_message)
+        self.assertIn("# 🚀 个股投资者简报", notifier_message)
+        self.assertIn("compact investor brief", notifier_message)
+        self.assertNotIn("legacy full dashboard", notifier_message)
+        pipeline.notifier.generate_brief_report.assert_called_once_with([stock_result])
+        pipeline.notifier.generate_aggregate_report.assert_not_called()
+
+    def test_run_full_analysis_empty_compact_stock_projection_fails_closed(self) -> None:
+        args = self._make_args()
+        target_date = date(2026, 3, 26)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=True,
+            single_stock_notify=False,
+            merge_email_notification=True,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+            report_type="simple",
+        )
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = [stock_result]
+        pipeline.notifier = MagicMock(
+            is_available=MagicMock(return_value=True),
+            generate_brief_report=MagicMock(return_value=""),
+            send=MagicMock(return_value=True),
+        )
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
+             patch("main._resolve_daily_market_context_target_date", return_value=target_date), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch(
+                 "main._prime_daily_market_context",
+                 return_value=(
+                     "大盘退潮，高风险，建议观望。",
+                     "## 完整大盘复盘\n市场结构偏弱，建议保守。",
+                 ),
+             ), \
+             patch("main._run_market_review_with_shared_lock"), \
+             patch("src.core.market_review.run_market_review"):
+            outcome = main.run_full_analysis(config, args, [])
+
+        self.assertFalse(outcome)
+        pipeline.notifier.send.assert_not_called()
 
     def test_run_market_review_with_shared_lock_forwards_request_config(self) -> None:
         config = self._make_config(

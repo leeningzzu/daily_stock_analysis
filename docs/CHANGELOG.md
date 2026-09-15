@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [新功能] GitHub Actions 新增仅人工 `stocks-only` 可激活的 P0 有界指定股票验收：独立接收 1–2 个沪深普通 A 股，不读取或覆盖 `STOCK_LIST`，禁用搜索、Agent、重试和模型回退，将主模型请求限制为每轮最多 2 次，并在 deterministic WAIT/PASS canonical action 一致性通过后只发送一封中文 simple 汇总 Email。
+- [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制
 - [修复] 飞书交互机器人在 `FEISHU_DOMAIN=lark` 时让 Stream 长连接与消息回复统一使用 Lark 国际版 API 域名，避免 SDK 默认连接飞书国内域名并返回 `Incorrect domain name`（fixes #937）。

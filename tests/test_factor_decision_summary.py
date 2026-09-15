@@ -252,6 +252,7 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         "sections": {
             "trend": "\u8d8b\u52bf\uff1a\u5747\u7ebf\u7ed3\u6784\u504f\u5f3a",
             "volume_price": "\u91cf\u4ef7\uff1a\u7f29\u91cf\u56de\u8c03",
+            "cost_structure": "\u6210\u672c/\u7b79\u7801\uff1a90%\u7b79\u7801\u96c6\u4e2d\u5ea6 12.00\uff0c\u83b7\u5229\u7b79\u7801\u7ea6 68%",
             "price_structure": "\u7ed3\u6784\uff1a\u4e3b\u8981\u652f\u6491\u4ecd\u6709\u6548",
             "valuation": "\u4f30\u503c\uff1a\u6570\u636e\u4e0d\u8db3",
         },
@@ -283,6 +284,8 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         "5m": "MISSING",
     }
     assert "\u5f53\u524d\u4ef7 10.50 \u5143" in brief["fused_paragraph"]
+    assert "90%\u7b79\u7801\u96c6\u4e2d\u5ea6 12.00" in brief["fused_paragraph"]
+    assert "\u5f53\u524d\u8bc1\u636e\u8986\u76d6" in brief["coverage_text"]
     assert brief["historical_reference"]["available"] is False
     assert brief["current_probability"]["available"] is False
     assert brief["key_levels"]["support_label"] == "结构支撑"

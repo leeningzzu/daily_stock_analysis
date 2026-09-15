@@ -784,7 +784,7 @@ schedule:
 - 本次输入不读取或覆盖 `STOCK_LIST`，不改变自动任务、自选股或 AUTO_SCREEN 行为。
 - P0 固定单 worker、非 Agent、单模型、非流式；每轮最多 2 次主模型请求，输出上限 4096 tokens，不做报告补全重试、模型回退、传输重试或参数恢复。
 - P0 不初始化新闻搜索或社交搜索，Tavily、SearXNG 等搜索调用上限为 0。
-- 全部目标必须各成功一次；之后只生成一份中文 simple 汇总报告，并将同一字符串直发为一封 Email。任一边界、目标、canonical 一致性或报告校验失败时，不发送通知并返回非零结果。
+- 全部目标必须各成功一次；之后从同一组 canonical `AnalysisResult` 同时生成两种投影：详细审计报告保存到本地/Artifact，精简 `investor-brief-v1` 投资者简报作为唯一一封 Email。两者共享同一 canonical evidence/decision authority，但不要求字节完全相同。任一边界、目标、canonical 一致性或任一必需投影校验失败时，不发送通知并返回非零结果。
 - 公开动作由 `stock_trend_quality_pullback_v1` 的 deterministic `canonical_decision` 唯一控制。P0 只输出 `WAIT/watch` 或 `PASS/avoid`；LLM 仅提供解释，不能产生或覆盖 BUY/HOLD/EXIT。
 
 在非交易日进行明确授权的人工验收时，可同时设置 `force_run=true`；它只影响这次 `workflow_dispatch`，不会改变自动计划任务的 strict trading-day gate。
@@ -1111,7 +1111,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 - Gmail：smtp.gmail.com:587
 
 **股票分组发往不同邮箱**（Issue #268，可选）：
-配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变 Telegram、企业微信、Webhook 等其他渠道收到的完整报告。大盘复盘会发往所有配置的邮箱。
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变其他渠道的资产集合。资产研究的 Email/Telegram 使用精简投资者通知投影，完整审计报告仍独立保存；企业微信、Webhook 等渠道继续使用各自既有投影。大盘复盘会发往所有配置的邮箱。
 
 > GitHub Actions 限制：截至 2026-03-29，仓库自带 `00-daily-analysis.yml` 不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此如果你只在仓库 Secrets / Variables 中新增这些变量，而没有修改 workflow 显式映射，它们不会进入运行进程，看起来就像“分组配置不生效”。
 

@@ -52,8 +52,7 @@
 {% endif %}
 {% if investor_brief.get('invalidation') %}**失效条件**: {{ investor_brief.get('invalidation') }}
 {% endif %}
-{% set coverage = investor_brief.get('coverage') or {} %}
-{% if coverage %}**周期覆盖**: 月线 {{ coverage.get('monthly', 'MISSING') }}｜周线 {{ coverage.get('weekly', 'MISSING') }}｜日线 {{ coverage.get('daily', 'MISSING') }}｜60m {{ coverage.get('60m', 'MISSING') }}｜30m {{ coverage.get('30m', 'MISSING') }}｜15m {{ coverage.get('15m', 'MISSING') }}｜5m {{ coverage.get('5m', 'MISSING') }}
+{% if investor_brief.get('coverage_text') %}**周期覆盖**: {{ investor_brief.get('coverage_text') }}
 {% endif %}
 {% set scenario = investor_brief.get('scenario') or {} %}
 {% set alternative = scenario.get('alternative') or {} %}

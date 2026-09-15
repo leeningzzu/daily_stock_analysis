@@ -31,6 +31,7 @@ class _FakeNotifier:
         self._markdown_to_image_channels = {"email"}
         self._markdown_to_image_max_chars = 15000
         self.generate_dashboard_report = MagicMock(side_effect=self._generate_dashboard_report)
+        self.generate_brief_report = MagicMock(side_effect=self._generate_brief_report)
         self.save_report_to_file = MagicMock(return_value="/tmp/report.md")
         self.is_available = MagicMock(return_value=True)
         self.get_available_channels = MagicMock(return_value=[NotificationChannel.EMAIL])
@@ -51,6 +52,10 @@ class _FakeNotifier:
     @staticmethod
     def _generate_dashboard_report(results):
         return "report:" + ",".join(r.code for r in results)
+
+    @staticmethod
+    def _generate_brief_report(results):
+        return "brief:" + ",".join(r.code for r in results)
 
 
 class TestPipelineEmailGroupImageRouting(unittest.TestCase):
@@ -99,7 +104,7 @@ class TestPipelineEmailGroupImageRouting(unittest.TestCase):
     @patch("src.md2img.markdown_to_image", return_value=None)
     def test_send_notifications_email_text_fallback_strips_hidden_market_metadata(self, _mock_md2img):
         pipeline = self._build_pipeline()
-        pipeline.notifier.generate_dashboard_report = MagicMock(
+        pipeline.notifier.generate_brief_report = MagicMock(
             return_value="[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody"
         )
         results = [SimpleNamespace(code="000001")]
@@ -123,6 +128,21 @@ class TestPipelineEmailGroupImageRouting(unittest.TestCase):
         called_receivers = [kwargs.get("receivers") for _, kwargs in pipeline.notifier.send_to_email.call_args_list]
         self.assertIn(["group@example.com"], called_receivers)
         self.assertIn(None, called_receivers)
+
+    @patch("src.md2img.markdown_to_image", return_value=None)
+    def test_empty_email_group_compact_projection_does_not_fallback_to_full_report(self, _mock_md2img):
+        pipeline = self._build_pipeline()
+        results = self._make_results()
+        pipeline.notifier.generate_brief_report = MagicMock(
+            side_effect=["brief:000001,600519", "", "brief:600519"]
+        )
+
+        pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier.generate_dashboard_report.assert_called_once_with(results)
+        pipeline.notifier.send_to_email.assert_called_once_with(
+            "brief:600519", receivers=None
+        )
 
     @patch("src.md2img.markdown_to_image", return_value=None)
     def test_email_group_diagnostics_only_patch_group_results(self, _mock_md2img):
@@ -273,7 +293,7 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
                 NotificationChannel.GOTIFY,
             ],
         )
-        pipeline.notifier.send_to_telegram.assert_called_once_with("report:000001")
+        pipeline.notifier.send_to_telegram.assert_called_once_with("brief-report")
         pipeline.notifier.send_to_wechat.assert_not_called()
         pipeline.notifier.send_to_email.assert_not_called()
         pipeline.notifier.evaluate_noise_control.assert_called_once()
@@ -295,10 +315,10 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
             pipeline._send_notifications(results, ReportType.SIMPLE)
 
         mock_md2img.assert_not_called()
-        pipeline.notifier.send_to_email.assert_called_once_with("report:000001")
+        pipeline.notifier.send_to_email.assert_called_once_with("brief-report")
         pipeline.notifier.send_to_telegram.assert_not_called()
 
-    def test_telegram_image_route_converts_full_report(self):
+    def test_telegram_image_route_converts_compact_investor_report(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.notifier = _FakeRoutedNotifier(
             [NotificationChannel.TELEGRAM],
@@ -311,7 +331,7 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
             pipeline._send_notifications(results, ReportType.SIMPLE)
 
         mock_md2img.assert_called_once_with(
-            "report:000001", max_chars=pipeline.notifier._markdown_to_image_max_chars
+            "brief-report", max_chars=pipeline.notifier._markdown_to_image_max_chars
         )
         pipeline.notifier._send_telegram_photo.assert_called_once_with(b"png")
         pipeline.notifier.send_to_telegram.assert_not_called()
@@ -349,6 +369,21 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         pipeline.notifier.send_to_gotify.assert_called_once_with("report:000001")
         pipeline.notifier._send_email_with_inline_image.assert_not_called()
         pipeline.notifier._send_telegram_photo.assert_not_called()
+
+    def test_empty_compact_projection_fails_closed_without_legacy_static_send(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier(
+            [NotificationChannel.TELEGRAM, NotificationChannel.EMAIL]
+        )
+        pipeline.notifier.generate_brief_report.return_value = ""
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier.send_to_telegram.assert_not_called()
+        pipeline.notifier.send_to_email.assert_not_called()
+        pipeline.notifier.generate_dashboard_report.assert_called_once_with(results)
 
     def test_noise_suppression_happens_before_markdown_to_image(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
@@ -389,8 +424,8 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.send_to_telegram.assert_called_once_with("report:000001")
-        pipeline.notifier.send_to_email.assert_called_once_with("report:000001")
+        pipeline.notifier.send_to_telegram.assert_called_once_with("brief-report")
+        pipeline.notifier.send_to_email.assert_called_once_with("brief-report")
         pipeline.notifier.record_noise_control.assert_called_once()
         pipeline.notifier.release_noise_control.assert_not_called()
 
@@ -404,8 +439,8 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.send_to_telegram.assert_called_once_with("report:000001")
-        pipeline.notifier.send_to_email.assert_called_once_with("report:000001")
+        pipeline.notifier.send_to_telegram.assert_called_once_with("brief-report")
+        pipeline.notifier.send_to_email.assert_called_once_with("brief-report")
         pipeline.notifier.record_noise_control.assert_not_called()
         pipeline.notifier.release_noise_control.assert_called_once()
 

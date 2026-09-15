@@ -1096,11 +1096,10 @@ def run_full_analysis(
             if market_report:
                 parts.append(f"# 📈 大盘复盘\n\n{market_report}")
             if results:
-                dashboard_content = pipeline.notifier.generate_aggregate_report(
-                    results,
-                    getattr(config, 'report_type', 'simple'),
-                )
-                parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
+                investor_content = pipeline.notifier.generate_brief_report(results)
+                if not isinstance(investor_content, str) or not investor_content.strip():
+                    raise ValueError("merged investor notification projection is empty")
+                parts.append(f"# 🚀 个股投资者简报\n\n{investor_content}")
             if parts:
                 combined_content = "\n\n---\n\n".join(parts)
                 if pipeline.notifier.is_available():

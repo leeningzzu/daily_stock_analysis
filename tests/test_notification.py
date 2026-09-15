@@ -76,8 +76,8 @@ def _make_investor_brief_result() -> AnalysisResult:
                 "one_sentence": "旧核心结论（不得出现）",
                 "time_sensitivity": "旧时效提示（不得出现）",
                 "position_advice": {
-                    "no_position": "旧空仓建议（不得出现）",
-                    "has_position": "旧持仓建议（不得出现）",
+                    "no_position": "不新增仓位；等待趋势和量价重新确认。",
+                    "has_position": "按既有风险计划管理；不因本报告生成新的卖出指令。",
                 },
             },
             "intelligence": {},
@@ -98,6 +98,7 @@ def _make_investor_brief_result() -> AnalysisResult:
                         "15m": "MISSING",
                         "5m": "MISSING",
                     },
+                    "coverage_text": "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
                     "canonical": {
                         "authority": "stock_trend_quality_pullback_v1",
                         "action": "PASS",
@@ -938,9 +939,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）", out)
         self.assertIn("**关键位置**: 结构支撑 1400.0｜结构压力 1500.0", out)
         self.assertIn(
-            "**周期覆盖**: 月线 MISSING｜周线 MISSING｜日线 PROVEN_CURRENT｜60m MISSING｜30m MISSING｜15m MISSING｜5m MISSING",
+            "**周期覆盖**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
             out,
         )
+        self.assertNotIn("MISSING", out)
         self.assertIn("**多周期量价与形态**:", out)
         self.assertIn("- 日线：趋势偏弱；量价尚未确认重新转强", out)
         self.assertNotIn("**短线波段 30/15/5m**", out)
@@ -983,13 +985,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             "结构压力 1500.0",
             "重新站上 1500 且放量确认",
             "跌破 1400 且放量",
-            "月线 MISSING",
-            "周线 MISSING",
-            "日线 PROVEN_CURRENT",
-            "60m MISSING",
-            "30m MISSING",
-            "15m MISSING",
-            "5m MISSING",
+            "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
             "尚未完成 PIT 同策略验证",
             "暂不提供（尚未完成独立校准）",
             "弱趋势仍未修复",
@@ -1007,6 +1003,51 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             self.assertNotIn("旧因子结论（不得重复）", output)
             self.assertNotIn("### 📌 核心结论", output)
             self.assertNotIn("### 🧭 综合评估", output)
+
+    @mock.patch("src.notification.get_config")
+    def test_investor_notification_projection_is_compact_ordered_and_missingness_safe(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+
+        for renderer_enabled in (False, True):
+            with self.subTest(report_renderer_enabled=renderer_enabled):
+                mock_get_config.return_value = _make_config(
+                    report_renderer_enabled=renderer_enabled
+                )
+                out = NotificationService().generate_brief_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+
+                markers = [
+                    "**综合结论**: 当前偏弱，暂不追高，等待趋势重新转强。",
+                    "日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。",
+                    "**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）",
+                    "**多周期**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+                    "**趋势/量价**: 日线：趋势偏弱；量价尚未确认重新转强",
+                    "**关键位置**: 结构支撑 1400.0｜结构压力 1500.0",
+                    "**触发条件**: 重新站上 1500 且放量确认",
+                    "**失效条件**: 跌破 1400 且放量",
+                    "**操作**: 空仓：不新增仓位；等待趋势和量价重新确认。｜持仓：按既有风险计划管理；不因本报告生成新的卖出指令。",
+                    "**主要风险**:",
+                    "- 弱趋势仍未修复",
+                    "- 估值证据仍有限",
+                ]
+                for marker in markers:
+                    self.assertIn(marker, out)
+
+                positions = [out.index(marker) for marker in markers[:10]]
+                self.assertEqual(positions, sorted(positions))
+                self.assertNotIn("第三条风险不应进入第一屏", out)
+                self.assertNotIn("MISSING", out)
+                self.assertNotIn("**技术参考分**", out)
+                self.assertNotIn("**历史参考胜率**", out)
+                self.assertNotIn("**当前机会概率**", out)
+                self.assertNotIn("旧核心结论（不得出现）", out)
+                self.assertNotIn("旧因子结论（不得重复）", out)
+                self.assertNotIn("### 📊 数据透视", out)
+                self.assertNotIn("盘中决策护栏", out)
 
     @mock.patch("src.notification.get_config")
     def test_future_ready_mtf_and_short_term_schema_renders_without_new_authority(

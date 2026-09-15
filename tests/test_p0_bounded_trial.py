@@ -280,10 +280,11 @@ def test_p0_message_byte_ceiling_fails_before_dispatch():
     assert analyzer.p0_model_request_count == 0
 
 
-def test_two_stock_trial_renders_once_and_sends_the_identical_report_once():
+def test_two_stock_trial_saves_full_audit_and_emails_compact_from_same_results():
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.notifier = MagicMock()
-    pipeline.notifier.generate_aggregate_report.return_value = "aggregate canonical report"
+    pipeline.notifier.generate_aggregate_report.return_value = "full canonical audit"
+    pipeline.notifier.generate_brief_report.return_value = "compact investor notification"
     pipeline.notifier.save_report_to_file.return_value = "reports/report.md"
     pipeline.notifier.send_to_email.return_value = True
     results = [_canonical_result("600519"), _canonical_result("000001")]
@@ -294,22 +295,31 @@ def test_two_stock_trial_renders_once_and_sends_the_identical_report_once():
         ReportType.SIMPLE,
     )
 
-    assert report == "aggregate canonical report"
+    assert report == "full canonical audit"
     pipeline.notifier.generate_aggregate_report.assert_called_once_with(
         results,
         ReportType.SIMPLE,
     )
-    pipeline.notifier.save_report_to_file.assert_called_once_with(report)
-    pipeline.notifier.send_to_email.assert_called_once_with(report)
+    pipeline.notifier.generate_brief_report.assert_called_once_with(results)
+    assert pipeline.notifier.generate_aggregate_report.call_args.args[0] is results
+    assert pipeline.notifier.generate_brief_report.call_args.args[0] is results
+    pipeline.notifier.save_report_to_file.assert_called_once_with("full canonical audit")
+    pipeline.notifier.send_to_email.assert_called_once_with("compact investor notification")
     pipeline.notifier.send.assert_not_called()
 
 
-@pytest.mark.parametrize("failure", ["target", "conflict", "empty_report"])
-def test_target_failure_conflict_or_empty_report_produces_zero_notification(failure):
+@pytest.mark.parametrize(
+    "failure",
+    ["target", "conflict", "empty_audit", "empty_notification"],
+)
+def test_target_conflict_or_empty_projection_produces_zero_notification(failure):
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.notifier = MagicMock()
     pipeline.notifier.generate_aggregate_report.return_value = (
-        "" if failure == "empty_report" else "aggregate"
+        "" if failure == "empty_audit" else "full audit"
+    )
+    pipeline.notifier.generate_brief_report.return_value = (
+        "" if failure == "empty_notification" else "compact notification"
     )
     pipeline.notifier.send_to_email.return_value = True
     results = [_canonical_result("600519")]

@@ -640,7 +640,9 @@ def _build_asset_research_brief_v1(trend_result, summary):
     elif trend:
         clauses.append(f"\u65e5\u7ebf{trend}")
 
-    for candidate in (volume_price, structure, valuation, cost, momentum):
+    # First-screen causal thesis prioritizes observable supply/demand and chip-cost
+    # evidence before valuation/shape detail; it never infers institutional intent.
+    for candidate in (volume_price, cost, valuation, structure, momentum):
         if _asset_brief_v1_usable(candidate) and candidate not in clauses:
             clauses.append(candidate)
         if len(clauses) >= 4:
@@ -732,7 +734,7 @@ def _build_asset_research_brief_v1(trend_result, summary):
         "risk_notes": risks,
         "valuation": {
             "status": "PARTIAL_CURRENT" if _asset_brief_v1_usable(valuation) else "MISSING",
-            "summary": str(sections.get("valuation") or "").strip(),
+            "summary": valuation if _asset_brief_v1_usable(valuation) else "",
             "uncertainty": (
                 "\u5c1a\u672a\u7ed1\u5b9a\u53ef\u9760\u5408\u7406\u4ef7\u683c\u533a\u95f4"
                 "\u3001\u5386\u53f2\u5206\u4f4d\u4e0e\u540c\u884c\u6bd4\u8f83\u3002"

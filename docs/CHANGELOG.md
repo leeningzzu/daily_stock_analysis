@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 为 `AUTO_SCREEN` 的一次性真实验收增加显式 bounded-live 适配层：仅 `max_results=1` 时可启用，并要求本次提供 exact model；筛选完成后复用既有 P0 深析硬边界，从而关闭 Agent/搜索/Router/模型 fallback/完整性补全重试，保留单 worker、同一 canonical report consumer 与单封 compact Email；普通 AUTO_SCREEN 和 19:00 自动计划不受影响。
 - [修复] 将 AUTO_SCREEN bounded-live 的安全边界与已经完成的 P0 Email 验收解耦：该一次性验收仍复用 P0 的单 worker、无搜索/Agent/Router/模型 fallback/retry 深析边界，但强制禁止 outbound notification，只保存完整审计报告/Artifact；行情数据源自身的确定性 retry/fallback 不属于模型效果边界；stocks-only P0 与正常 19:00 Production 通知行为保持不变。
 - [修复] AUTO_SCREEN bounded-live 复用既有 `selected_candidates` 与 canonical decision 生成脱敏 machine-readable acceptance receipt，并投影到 GitHub Step Summary，避免后续验收默认依赖人工搬运 Artifact；同时将 MACD 零轴上下状态改为明确的 MACD 动量文案，避免与 MA“多头/空头排列”混淆，并明确 `retry/fallback=0` 仅指模型效果边界、行情数据源仍可执行确定性重试/降级。
+- [改进] AnalysisContextPack 的 `daily_bars` 复用现有 market-phase completed-session 语义与 stored daily bar 内容生成 deterministic evidence identity：仅 exact bar date 与权威 `effective_daily_bar_date` 一致且交易日历可证明时标记 READY；旧 bar / 新于 completed date / 缺源 / 无法证明分别显式降级为 stale / partial / missing / unknown，并用稳定 SHA-256 绑定实际使用的日线内容，不新增数据库或数据源。
 - [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制

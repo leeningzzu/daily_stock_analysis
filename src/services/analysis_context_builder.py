@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Sequence
+
+from src.core.trading_calendar import resolve_historical_daily_bar_date
 
 from src.schemas.analysis_context_pack import (
     AnalysisContextBlock,
@@ -21,6 +25,22 @@ from src.schemas.analysis_context_pack import (
 _REALTIME_OVERLAY_WARNING = "intraday_realtime_overlay"
 _REALTIME_FALLBACK_WARNING = "realtime_provider_fallback"
 _FUNDAMENTAL_FAILED_REASON = "fundamental_pipeline_failed"
+_DAILY_EVIDENCE_IDENTITY_VERSION = "daily-evidence-identity-v1"
+_DAILY_BAR_IDENTITY_FIELDS = (
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "pct_chg",
+    "ma5",
+    "ma10",
+    "ma20",
+    "volume_ratio",
+    "data_source",
+)
 _QUALITY_BLOCK_WEIGHTS: Dict[str, int] = {
     "quote": 25,
     "daily_bars": 25,
@@ -180,14 +200,24 @@ def _build_quote_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextB
 def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBlock:
     context = artifacts.base_context or {}
     date_value = context.get("date")
+    evidence_identity = _build_daily_evidence_identity(artifacts, context)
     metadata = {
         key: value
         for key, value in {
             "date": date_value,
             "data_missing": bool(context.get("data_missing")),
+            "evidence_identity": evidence_identity,
         }.items()
         if value not in (None, "")
     }
+    identity_status = _daily_identity_context_status(evidence_identity)
+    identity_reason = str(evidence_identity.get("reason") or "").strip() or None
+    warnings = (
+        []
+        if evidence_identity.get("identity_state") == "READY"
+        else [identity_reason or "daily_evidence_identity_not_ready"]
+    )
+
     if context.get("data_missing"):
         return AnalysisContextBlock(
             status=ContextFieldStatus.MISSING,
@@ -205,17 +235,32 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
                 ),
             },
             source="storage.get_analysis_context",
+            warnings=warnings,
             metadata=metadata,
         )
 
     items: Dict[str, AnalysisContextItem] = {}
     for key in ("today", "yesterday"):
         value = context.get(key)
+        if key == "today" and value:
+            item_status = identity_status
+            missing_reason = (
+                identity_reason
+                if item_status == ContextFieldStatus.MISSING
+                else None
+            )
+        else:
+            item_status = (
+                ContextFieldStatus.AVAILABLE
+                if value
+                else ContextFieldStatus.MISSING
+            )
+            missing_reason = None if value else f"{key}_missing"
         items[key] = AnalysisContextItem(
-            status=ContextFieldStatus.AVAILABLE if value else ContextFieldStatus.MISSING,
+            status=item_status,
             value=value or None,
             source="storage.get_analysis_context",
-            missing_reason=None if value else f"{key}_missing",
+            missing_reason=missing_reason,
         )
     if date_value:
         items["date"] = AnalysisContextItem(
@@ -226,7 +271,9 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
         )
 
     bar_statuses = [items[key].status for key in ("today", "yesterday")]
-    if all(status == ContextFieldStatus.AVAILABLE for status in bar_statuses):
+    if identity_status != ContextFieldStatus.AVAILABLE:
+        block_status = identity_status
+    elif all(status == ContextFieldStatus.AVAILABLE for status in bar_statuses):
         block_status = ContextFieldStatus.AVAILABLE
     elif any(status == ContextFieldStatus.AVAILABLE for status in bar_statuses):
         block_status = ContextFieldStatus.PARTIAL
@@ -236,8 +283,124 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
         status=block_status,
         items=items,
         source="storage.get_analysis_context",
+        warnings=warnings,
         metadata=metadata,
     )
+
+
+def _build_daily_evidence_identity(
+    artifacts: PipelineAnalysisArtifacts,
+    context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Bind one stored daily bar to the authoritative completed-session identity."""
+    phase = artifacts.phase if isinstance(artifacts.phase, Mapping) else {}
+    today = context.get("today") if isinstance(context.get("today"), Mapping) else {}
+    market = str(artifacts.market or "").strip().lower()
+    phase_market = str(phase.get("market") or "").strip().lower()
+    phase_name = str(phase.get("phase") or "").strip().lower()
+    session_date = _coerce_identity_date(phase.get("session_date"))
+    effective_date = _coerce_identity_date(phase.get("effective_daily_bar_date"))
+    bar_date = _coerce_identity_date(today.get("date") or context.get("date"))
+    source = _source_text(today.get("data_source") or today.get("source"))
+
+    if context.get("data_missing") or not today:
+        state, reason = "MISSING", "daily_bar_missing"
+    elif bar_date is None:
+        state, reason = "MISSING", "daily_bar_date_missing_or_invalid"
+    elif not source:
+        state, reason = "MISSING", "daily_bar_source_missing"
+    elif not phase:
+        state, reason = "UNKNOWN", "phase_context_missing"
+    elif not market or not phase_market or phase_market != market:
+        state, reason = "UNKNOWN", "phase_market_mismatch"
+    elif session_date is None:
+        state, reason = "UNKNOWN", "phase_session_date_missing_or_invalid"
+    elif effective_date is None:
+        state, reason = "UNKNOWN", "effective_daily_bar_date_missing_or_invalid"
+    else:
+        expected = resolve_historical_daily_bar_date(market, session_date, phase_name)
+        if expected != effective_date:
+            state, reason = "UNKNOWN", "effective_daily_bar_date_unproven"
+        elif bar_date < effective_date:
+            state, reason = "STALE", "daily_bar_older_than_effective_date"
+        elif bar_date > effective_date:
+            state, reason = "PARTIAL", "daily_bar_newer_than_effective_date"
+        else:
+            state, reason = "READY", "completed_daily_bar_proven"
+
+    bar_hash = (
+        _hash_daily_bar_identity(artifacts, today, bar_date=bar_date, source=source)
+        if today and bar_date and source
+        else None
+    )
+    return {
+        "schema_version": _DAILY_EVIDENCE_IDENTITY_VERSION,
+        "code": str(artifacts.code or "").strip(),
+        "market": market or None,
+        "session_date": session_date.isoformat() if session_date else None,
+        "effective_daily_bar_date": effective_date.isoformat() if effective_date else None,
+        "daily_bar_date": bar_date.isoformat() if bar_date else None,
+        "daily_bar_source": source or None,
+        "is_partial_bar": phase.get("is_partial_bar") if isinstance(phase.get("is_partial_bar"), bool) else None,
+        "completed_bar_proven": state == "READY",
+        "identity_state": state,
+        "reason": reason,
+        "daily_bar_identity_sha256": bar_hash,
+    }
+
+
+def _daily_identity_context_status(identity: Mapping[str, Any]) -> ContextFieldStatus:
+    return {
+        "READY": ContextFieldStatus.AVAILABLE,
+        "STALE": ContextFieldStatus.STALE,
+        "PARTIAL": ContextFieldStatus.PARTIAL,
+    }.get(str(identity.get("identity_state") or "").upper(), ContextFieldStatus.MISSING)
+
+
+def _coerce_identity_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            pass
+    return None
+
+
+def _hash_daily_bar_identity(
+    artifacts: PipelineAnalysisArtifacts,
+    today: Mapping[str, Any],
+    *,
+    bar_date: date,
+    source: str,
+) -> str:
+    bar_payload = {
+        key: (
+            bar_date.isoformat()
+            if key == "date"
+            else source
+            if key == "data_source"
+            else today.get(key)
+        )
+        for key in _DAILY_BAR_IDENTITY_FIELDS
+    }
+    payload = {
+        "schema_version": _DAILY_EVIDENCE_IDENTITY_VERSION,
+        "code": str(artifacts.code or "").strip(),
+        "market": str(artifacts.market or "").strip().lower(),
+        "bar": bar_payload,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _build_technical_block(

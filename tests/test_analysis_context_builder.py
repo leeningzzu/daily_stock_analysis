@@ -65,16 +65,30 @@ def _artifacts(**overrides) -> PipelineAnalysisArtifacts:
         "code": "600519",
         "stock_name": "贵州茅台",
         "market": "cn",
-        "phase": {"market": "cn", "phase": "intraday"},
+        "phase": {
+            "market": "cn",
+            "phase": "postmarket",
+            "session_date": "2026-05-22",
+            "effective_daily_bar_date": "2026-05-22",
+            "is_partial_bar": False,
+        },
         "base_context": {
             "code": "600519",
             "stock_name": "贵州茅台",
-            "date": "2026-05-24",
-            "today": {"date": "2026-05-24", "close": 1880.0},
-            "yesterday": {"date": "2026-05-23", "close": 1860.0},
+            "date": "2026-05-22",
+            "today": {
+                "date": "2026-05-22",
+                "close": 1880.0,
+                "data_source": "akshare_em",
+            },
+            "yesterday": {
+                "date": "2026-05-21",
+                "close": 1860.0,
+                "data_source": "akshare_em",
+            },
         },
         "enhanced_context": {
-            "today": {"date": "2026-05-24", "close": 1880.0},
+            "today": {"date": "2026-05-22", "close": 1880.0},
         },
         "realtime_quote": _quote(),
         "trend_result": _FakeTrend(
@@ -88,7 +102,7 @@ def _artifacts(**overrides) -> PipelineAnalysisArtifacts:
         "chip_data": _FakeChip(
             {
                 "code": "600519",
-                "date": "2026-05-24",
+                "date": "2026-05-22",
                 "source": "akshare",
                 "profit_ratio": 0.72,
                 "avg_cost": 1700.0,
@@ -277,13 +291,107 @@ def test_daily_bars_uses_base_context_and_keeps_dates_out_of_timestamp() -> None
     one_bar = AnalysisContextBuilder.build(
         _artifacts(
             base_context={
-                "date": "2026-05-24",
-                "today": {"date": "2026-05-24", "close": 1880.0},
+                "date": "2026-05-22",
+                "today": {
+                    "date": "2026-05-22",
+                    "close": 1880.0,
+                    "data_source": "akshare_em",
+                },
                 "yesterday": {},
             }
         )
     ).blocks["daily_bars"]
     assert one_bar.status == ContextFieldStatus.PARTIAL
+
+
+def _patch_completed_date(monkeypatch, value="2026-05-22") -> None:
+    monkeypatch.setattr(
+        builder_module,
+        "resolve_historical_daily_bar_date",
+        lambda *_args: (
+            builder_module.date.fromisoformat(value) if value is not None else None
+        ),
+    )
+
+
+def test_daily_evidence_identity_ready_binds_exact_completed_bar(monkeypatch) -> None:
+    _patch_completed_date(monkeypatch)
+    block = AnalysisContextBuilder.build(_artifacts()).blocks["daily_bars"]
+    identity = block.metadata["evidence_identity"]
+
+    assert block.status == ContextFieldStatus.AVAILABLE
+    assert identity["identity_state"] == "READY"
+    assert identity["completed_bar_proven"] is True
+    assert identity["daily_bar_date"] == identity["effective_daily_bar_date"] == "2026-05-22"
+    assert identity["daily_bar_source"] == "akshare_em"
+    assert len(identity["daily_bar_identity_sha256"]) == 64
+
+    phase = dict(_artifacts().phase, phase="intraday", session_date="2026-05-25", is_partial_bar=True)
+    intraday = AnalysisContextBuilder.build(_artifacts(phase=phase)).blocks["daily_bars"]
+    assert intraday.metadata["evidence_identity"]["identity_state"] == "READY"
+
+
+@pytest.mark.parametrize(
+    ("bar_date", "status", "state", "reason"),
+    [
+        ("2026-05-21", ContextFieldStatus.STALE, "STALE", "daily_bar_older_than_effective_date"),
+        ("2026-05-25", ContextFieldStatus.PARTIAL, "PARTIAL", "daily_bar_newer_than_effective_date"),
+    ],
+)
+def test_daily_evidence_identity_marks_date_mismatch(
+    monkeypatch, bar_date, status, state, reason
+) -> None:
+    _patch_completed_date(monkeypatch)
+    base_context = dict(_artifacts().base_context)
+    base_context["date"] = bar_date
+    base_context["today"] = dict(base_context["today"], date=bar_date)
+    block = AnalysisContextBuilder.build(
+        _artifacts(base_context=base_context)
+    ).blocks["daily_bars"]
+    identity = block.metadata["evidence_identity"]
+
+    assert block.status == status
+    assert identity["identity_state"] == state
+    assert identity["reason"] == reason
+
+
+def test_daily_evidence_identity_missing_source_fails_closed(monkeypatch) -> None:
+    _patch_completed_date(monkeypatch)
+    base_context = dict(_artifacts().base_context)
+    base_context["today"] = dict(base_context["today"])
+    base_context["today"].pop("data_source")
+    block = AnalysisContextBuilder.build(
+        _artifacts(base_context=base_context)
+    ).blocks["daily_bars"]
+    identity = block.metadata["evidence_identity"]
+
+    assert block.status == ContextFieldStatus.MISSING
+    assert identity["identity_state"] == "MISSING"
+    assert identity["reason"] == "daily_bar_source_missing"
+    assert identity["daily_bar_identity_sha256"] is None
+
+
+def test_daily_evidence_identity_unproven_phase_fails_closed(monkeypatch) -> None:
+    _patch_completed_date(monkeypatch, None)
+    block = AnalysisContextBuilder.build(_artifacts()).blocks["daily_bars"]
+    identity = block.metadata["evidence_identity"]
+
+    assert block.status == ContextFieldStatus.MISSING
+    assert identity["identity_state"] == "UNKNOWN"
+    assert identity["reason"] == "effective_daily_bar_date_unproven"
+    assert identity["completed_bar_proven"] is False
+
+
+def test_daily_bar_identity_hash_changes_with_bar_content(monkeypatch) -> None:
+    _patch_completed_date(monkeypatch)
+    first = AnalysisContextBuilder.build(_artifacts()).blocks["daily_bars"].metadata["evidence_identity"]
+    base_context = dict(_artifacts().base_context)
+    base_context["today"] = dict(base_context["today"], close=1881.0)
+    second = AnalysisContextBuilder.build(
+        _artifacts(base_context=base_context)
+    ).blocks["daily_bars"].metadata["evidence_identity"]
+
+    assert first["daily_bar_identity_sha256"] != second["daily_bar_identity_sha256"]
 
 
 def test_technical_missing_and_realtime_overlay_statuses_are_explicit() -> None:

@@ -700,6 +700,8 @@ Common time reference:
 
 `mode=auto-screen` is manual `workflow_dispatch` only. Set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). Screening only decides which candidates enter deep analysis: LLM ranking is disabled on this path, the bounded candidates are forwarded to the existing `run_full_analysis` / `StockAnalysisPipeline` chain, and the existing canonical factor/decision owner remains the final public-action authority. Screening score is not a win rate or calibrated probability. This manual acceptance entry does not promote the existing scheduled run to AUTO_SCREEN.
 
+A one-off real acceptance run may explicitly set `auto_screen_bounded_live=true`, but only with `auto_screen_max_results=1`, and `auto_screen_bounded_model` must provide the exact model ID approved for that run. Screening remains deterministic with `use_llm=False`; once the single candidate is selected, deep analysis temporarily reuses the existing P0 process-local boundary: one worker, no Agent/search/Router/fallback, zero integrity retry, direct LiteLLM with `num_retries=0`, a full audit saved from the canonical `AnalysisResult`, and one compact investor Email. The switch and model input are one-shot `workflow_dispatch` values, are not persisted, and do not change ordinary AUTO_SCREEN or the existing 19:00 schedule.
+
 #### P0 bounded specified-stock acceptance
 
 `workflow_dispatch` also exposes the optional `p0_stock_codes` input. P0 bounded acceptance is activated only when `mode=stocks-only` and that input is non-empty. Scheduled runs and manual runs without the input keep the existing path.

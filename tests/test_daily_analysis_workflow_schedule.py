@@ -221,9 +221,27 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             'if [ "$MODE" = "auto-screen" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then',
             self.text,
         )
+        self.assertIn("auto_screen_bounded_live:", self.text)
+        self.assertIn("auto_screen_bounded_model:", self.text)
+        self.assertIn(
+            'AUTO_SCREEN_BOUNDED_MODEL: ${{ github.event.inputs.auto_screen_bounded_model || \'\' }}',
+            self.text,
+        )
+        self.assertIn(
+            'if [ "${{ github.event.inputs.auto_screen_bounded_live }}" = "true" ]; then',
+            self.text,
+        )
+        self.assertIn(
+            'AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_max_results=1',
+            self.text,
+        )
+        self.assertIn(
+            'AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_bounded_model',
+            self.text,
+        )
         self.assertIn(
             'python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" '
-            '--no-market-review $FORCE_RUN_ARG',
+            '$AUTO_SCREEN_BOUNDED_LIVE_ARG --no-market-review $FORCE_RUN_ARG',
             self.text,
         )
 

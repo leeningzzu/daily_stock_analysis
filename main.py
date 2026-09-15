@@ -405,6 +405,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--auto-screen-bounded-live',
+        action='store_true',
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
         '--p0-bounded-trial',
         action='store_true',
         help=argparse.SUPPRESS,
@@ -1198,9 +1204,13 @@ def _run_auto_screen_shared_analysis(
     max_results: int = 5,
     selection_seed: str = "",
     raise_errors: bool = False,
+    bounded_live: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Feed deterministic AUTO_SCREEN candidates into the existing analysis shell."""
     from src.services.screening_service import resolve_auto_screen_analysis_targets
+
+    if bounded_live and max_results != 1:
+        raise P0BoundedTrialError("AUTO_SCREEN bounded live requires max_results=1")
 
     resolution = resolve_auto_screen_analysis_targets(
         config,
@@ -1218,6 +1228,24 @@ def _run_auto_screen_shared_analysis(
         )
         return True, resolution
 
+    analysis_args = args
+    if bounded_live:
+        if len(stock_codes) != 1:
+            raise P0BoundedTrialError("AUTO_SCREEN bounded live requires exactly one screened candidate")
+        stock_codes = validate_p0_stock_codes(",".join(stock_codes))
+        bounded_model = str(os.getenv("AUTO_SCREEN_BOUNDED_MODEL", "") or "").strip()
+        if not bounded_model:
+            raise P0BoundedTrialError("AUTO_SCREEN bounded live requires an exact model identity")
+        config.litellm_model = bounded_model
+        analysis_args = argparse.Namespace(**vars(args))
+        analysis_args.p0_bounded_trial = True
+        _apply_p0_runtime_config(config, analysis_args)
+        logger.info(
+            "AUTO_SCREEN 有界真实验收复用 P0 深析边界: code=%s model=%s",
+            stock_codes[0],
+            bounded_model,
+        )
+
     provenance = resolution.get("provenance") or {}
     logger.info(
         "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s codes=%s",
@@ -1227,7 +1255,7 @@ def _run_auto_screen_shared_analysis(
     )
     succeeded = run_full_analysis(
         config,
-        args,
+        analysis_args,
         stock_codes,
         raise_errors=raise_errors,
     )
@@ -1526,6 +1554,10 @@ def main() -> int:
 
     p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
     auto_screen = bool(getattr(args, "auto_screen", False))
+    auto_screen_bounded_live = bool(getattr(args, "auto_screen_bounded_live", False))
+    if auto_screen_bounded_live and not auto_screen:
+        logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires --auto-screen")
+        return 2
     if auto_screen:
         if (
             os.getenv("GITHUB_ACTIONS") != "true"
@@ -1544,6 +1576,16 @@ def main() -> int:
         ):
             logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: incompatible CLI arguments")
             return 2
+        if auto_screen_bounded_live:
+            if getattr(args, "auto_screen_max_results", 1) != 1:
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires max_results=1")
+                return 2
+            if getattr(args, "no_notify", False):
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires aggregate Email notification")
+                return 2
+            if not str(os.getenv("AUTO_SCREEN_BOUNDED_MODEL", "") or "").strip():
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires exact model input")
+                return 2
         config.screening_enabled = True
         config.single_stock_notify = False
         args.no_market_review = True
@@ -1744,6 +1786,7 @@ def main() -> int:
                 market="cn",
                 max_results=getattr(args, "auto_screen_max_results", 1),
                 raise_errors=True,
+                bounded_live=auto_screen_bounded_live,
             )
             return 0 if succeeded else 1
 

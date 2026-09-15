@@ -91,6 +91,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "stocks": None,
             "auto_screen": False,
             "auto_screen_max_results": 1,
+            "auto_screen_bounded_live": False,
             "portfolio": None,
             "webui": False,
             "webui_only": False,
@@ -539,7 +540,109 @@ class MainScheduleModeTestCase(unittest.TestCase):
             market="cn",
             max_results=2,
             raise_errors=True,
+            bounded_live=False,
         )
+
+    def test_auto_screen_bounded_live_reuses_p0_deep_analysis_boundary(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=1, auto_screen_bounded_live=True)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+            merge_email_notification=True,
+            report_type="full",
+            report_language="en",
+            report_integrity_retry=3,
+            agent_mode=True,
+            agent_skills=["all"],
+            analysis_delay=10,
+            litellm_model="old/model",
+        )
+        resolution = {
+            "stock_codes": ["600519"],
+            "provenance": {"strategy": "momentum_quality", "run_id": "bounded-live"},
+        }
+
+        with (
+            patch.dict(os.environ, {"AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model"}, clear=False),
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.validate_p0_stock_codes", return_value=["600519"]) as validate_codes,
+            patch("main.run_full_analysis", return_value=True) as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                max_results=1,
+                raise_errors=True,
+                bounded_live=True,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        validate_codes.assert_called_once_with("600519")
+        analysis_args = run_full_analysis.call_args.args[1]
+        self.assertIsNot(analysis_args, args)
+        self.assertFalse(getattr(args, "p0_bounded_trial", False))
+        self.assertTrue(analysis_args.p0_bounded_trial)
+        self.assertEqual(analysis_args.workers, 1)
+        self.assertTrue(analysis_args.no_market_review)
+        self.assertEqual(config.litellm_model, "gemini/test-model")
+        self.assertFalse(config.single_stock_notify)
+        self.assertFalse(config.merge_email_notification)
+        self.assertEqual(config.report_type, "simple")
+        self.assertEqual(config.report_language, "zh")
+        self.assertEqual(config.report_integrity_retry, 0)
+        self.assertFalse(config.agent_mode)
+        self.assertEqual(config.agent_skills, [])
+        run_full_analysis.assert_called_once_with(
+            config,
+            analysis_args,
+            ["600519"],
+            raise_errors=True,
+        )
+
+    def test_auto_screen_bounded_live_requires_one_candidate_budget_before_screening(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=2, auto_screen_bounded_live=True)
+        config = self._make_config(run_immediately=True)
+
+        with patch("src.services.screening_service.resolve_auto_screen_analysis_targets") as resolve_targets:
+            with self.assertRaisesRegex(main.P0BoundedTrialError, "max_results=1"):
+                main._run_auto_screen_shared_analysis(
+                    config,
+                    args,
+                    strategy="momentum_quality",
+                    max_results=2,
+                    bounded_live=True,
+                )
+        resolve_targets.assert_not_called()
+
+    def test_auto_screen_bounded_live_rejects_non_stock_candidate_before_analysis(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=1, auto_screen_bounded_live=True)
+        config = self._make_config(run_immediately=True)
+        resolution = {"stock_codes": ["510300"], "provenance": {"strategy": "momentum_quality"}}
+
+        with (
+            patch.dict(os.environ, {"AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model"}, clear=False),
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.validate_p0_stock_codes", side_effect=main.P0BoundedTrialError("reject ETF")),
+            patch("main.run_full_analysis") as run_full_analysis,
+        ):
+            with self.assertRaisesRegex(main.P0BoundedTrialError, "reject ETF"):
+                main._run_auto_screen_shared_analysis(
+                    config,
+                    args,
+                    strategy="momentum_quality",
+                    max_results=1,
+                    bounded_live=True,
+                )
+        run_full_analysis.assert_not_called()
 
     def test_auto_screen_rejects_non_workflow_dispatch_context(self) -> None:
         args = self._make_args(auto_screen=True)

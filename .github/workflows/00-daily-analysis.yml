@@ -32,6 +32,16 @@ on:
           - '1'
           - '2'
           - '3'
+      auto_screen_bounded_live:
+        description: 'AUTO_SCREEN 有界真实验收（仅 max_results=1；复用 P0 深析边界）'
+        required: false
+        default: false
+        type: boolean
+      auto_screen_bounded_model:
+        description: 'AUTO_SCREEN 有界真实验收模型（仅 bounded live；一次性覆盖，不持久化）'
+        required: false
+        default: ''
+        type: string
       p0_stock_codes:
         description: 'P0 有界验收代码（仅 stocks-only；1-2 只沪深普通 A 股）'
         required: false
@@ -456,6 +466,7 @@ jobs:
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
           # AUTO_SCREEN 第一阶段仅允许 workflow_dispatch，候选数硬限制为 1-3。
           AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}
+          AUTO_SCREEN_BOUNDED_MODEL: ${{ github.event.inputs.auto_screen_bounded_model || '' }}
           # 仅 workflow_dispatch 的显式输入可激活 P0 有界验收；自动 schedule 为空。
           P0_STOCK_CODES: ${{ github.event.inputs.p0_stock_codes || '' }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
@@ -604,11 +615,29 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
+          AUTO_SCREEN_BOUNDED_LIVE_ARG=""
+          if [ "${{ github.event.inputs.auto_screen_bounded_live }}" = "true" ]; then
+            if [ "$MODE" != "auto-screen" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires mode=auto-screen" >&2
+              exit 2
+            fi
+            if [ "$AUTO_SCREEN_MAX_RESULTS" != "1" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_max_results=1" >&2
+              exit 2
+            fi
+            if [ -z "${AUTO_SCREEN_BOUNDED_MODEL:-}" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_bounded_model" >&2
+              exit 2
+            fi
+            AUTO_SCREEN_BOUNDED_LIVE_ARG="--auto-screen-bounded-live"
+            echo "🧪 AUTO_SCREEN 有界真实验收：1 candidate / exact model / P0 deep-analysis boundary"
+          fi
+
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "auto-screen" ]; then
-            python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" --no-market-review $FORCE_RUN_ARG
+            python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" $AUTO_SCREEN_BOUNDED_LIVE_ARG --no-market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
             if [ "$P0_BOUNDED_TRIAL" = "true" ]; then
               python main.py --p0-bounded-trial --stocks "$P0_STOCK_CODES" --no-market-review $FORCE_RUN_ARG

@@ -3625,17 +3625,26 @@ class StockAnalysisPipeline:
                 return
             
             # 推送通知
-            notification_report = (
-                report
-                if report_type == ReportType.BRIEF
-                else self.notifier.generate_brief_report(results)
-            )
-            if not isinstance(notification_report, str) or not notification_report.strip():
-                raise ValueError("investor notification projection is empty")
-
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
                 channels = self.notifier.get_channels_for_route("report", channels=channels)
+
+                # Compact investor projection is owned only by Email/Telegram.
+                # Full-report consumers (for example Feishu) must not depend on
+                # generate_brief_report, while Email/Telegram remain fail-closed.
+                compact_consumers = {
+                    NotificationChannel.EMAIL,
+                    NotificationChannel.TELEGRAM,
+                }
+                compact_required = any(channel in compact_consumers for channel in channels)
+                notification_report = report
+                if compact_required and report_type != ReportType.BRIEF:
+                    notification_report = self.notifier.generate_brief_report(results)
+                if compact_required and (
+                    not isinstance(notification_report, str)
+                    or not notification_report.strip()
+                ):
+                    raise ValueError("investor notification projection is empty")
 
                 def _send_channel_safely(
                     channel_label: str,

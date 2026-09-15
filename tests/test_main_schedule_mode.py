@@ -89,6 +89,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "debug": False,
             "stocks": None,
+            "auto_screen": False,
+            "auto_screen_max_results": 1,
             "portfolio": None,
             "webui": False,
             "webui_only": False,
@@ -500,6 +502,69 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertTrue(succeeded)
         self.assertIs(observed, resolution)
         run_full_analysis.assert_not_called()
+
+    def test_auto_screen_manual_entry_routes_through_shared_analysis(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=2)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"},
+                clear=False,
+            ),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main._setup_bootstrap_logging"),
+            patch("main._setup_runtime_logging"),
+            patch(
+                "main._run_auto_screen_shared_analysis",
+                return_value=(True, {"stock_codes": ["600519"]}),
+            ) as auto_screen_run,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(config.screening_enabled)
+        self.assertFalse(config.single_stock_notify)
+        self.assertTrue(args.no_market_review)
+        auto_screen_run.assert_called_once_with(
+            config,
+            args,
+            strategy="momentum_quality",
+            market="cn",
+            max_results=2,
+            raise_errors=True,
+        )
+
+    def test_auto_screen_rejects_non_workflow_dispatch_context(self) -> None:
+        args = self._make_args(auto_screen=True)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "false", "GITHUB_EVENT_NAME": ""},
+                clear=False,
+            ),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main._setup_bootstrap_logging"),
+            patch("main._setup_runtime_logging"),
+            patch("main._run_auto_screen_shared_analysis") as auto_screen_run,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 2)
+        auto_screen_run.assert_not_called()
 
     def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
         args = self._make_args(portfolio="futu")

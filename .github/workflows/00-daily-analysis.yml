@@ -17,11 +17,21 @@ on:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
+          - auto-screen   # 手动 AUTO_SCREEN → 同一深析/决策/报告链
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
+      auto_screen_max_results:
+        description: 'AUTO_SCREEN 最终深析候选数（仅 auto-screen；1-3）'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
       p0_stock_codes:
         description: 'P0 有界验收代码（仅 stocks-only；1-2 只沪深普通 A 股）'
         required: false
@@ -444,6 +454,8 @@ jobs:
           # ==========================================
           # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          # AUTO_SCREEN 第一阶段仅允许 workflow_dispatch，候选数硬限制为 1-3。
+          AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}
           # 仅 workflow_dispatch 的显式输入可激活 P0 有界验收；自动 schedule 为空。
           P0_STOCK_CODES: ${{ github.event.inputs.p0_stock_codes || '' }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
@@ -475,6 +487,11 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.mode || 'full' }}"
           P0_BOUNDED_TRIAL="false"
+
+          if [ "$MODE" = "auto-screen" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen is workflow_dispatch-only" >&2
+            exit 2
+          fi
 
           # P0 有界验收只消费本次 workflow_dispatch 输入，不读取或覆盖 STOCK_LIST。
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${P0_STOCK_CODES:-}" ]; then
@@ -513,6 +530,8 @@ jobs:
           echo "🎯 运行模式: $MODE"
           if [ "$P0_BOUNDED_TRIAL" = "true" ]; then
             echo "📊 P0 有界验收代码: $P0_STOCK_CODES"
+          elif [ "$MODE" = "auto-screen" ]; then
+            echo "📊 AUTO_SCREEN: deterministic / max_results=$AUTO_SCREEN_MAX_RESULTS / strategy=momentum_quality"
           else
             echo "📊 自选股: $STOCK_LIST"
           fi
@@ -588,6 +607,8 @@ jobs:
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
+          elif [ "$MODE" = "auto-screen" ]; then
+            python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" --no-market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
             if [ "$P0_BOUNDED_TRIAL" = "true" ]; then
               python main.py --p0-bounded-trial --stocks "$P0_STOCK_CODES" --no-market-review $FORCE_RUN_ARG

@@ -642,6 +642,7 @@ python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
+python main.py --auto-screen --auto-screen-max-results 1  # GitHub workflow_dispatch context only; 1-3 candidates
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
@@ -680,8 +681,10 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 ```yaml
 schedule:
   # UTC time, Beijing time = UTC + 8
-  - cron: '0 10 * * 1-5'   # Monday to Friday 18:00 (Beijing Time)
+  - cron: '0 11 * * 1-5'   # Monday to Friday 19:00 (Beijing Time, current default)
 ```
+
+The current GitHub Actions schedule also passes through the strict CN trading-day gate, so weekends and official China market holidays do not enter analysis.
 
 Common time reference:
 
@@ -690,8 +693,12 @@ Common time reference:
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
 | 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
+| 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
+
+#### Bounded manual AUTO_SCREEN entry
+
+`mode=auto-screen` is manual `workflow_dispatch` only. Set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). Screening only decides which candidates enter deep analysis: LLM ranking is disabled on this path, the bounded candidates are forwarded to the existing `run_full_analysis` / `StockAnalysisPipeline` chain, and the existing canonical factor/decision owner remains the final public-action authority. Screening score is not a win rate or calibrated probability. This manual acceptance entry does not promote the existing scheduled run to AUTO_SCREEN.
 
 #### P0 bounded specified-stock acceptance
 

@@ -207,6 +207,30 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.text,
         )
 
+    def test_auto_screen_entry_is_manual_only_and_bounded(self):
+        self.assertIn("- auto-screen", self.text)
+        self.assertIn("auto_screen_max_results:", self.text)
+        self.assertIn("default: '1'", self.text)
+        self.assertIn("- '2'", self.text)
+        self.assertIn("- '3'", self.text)
+        self.assertIn(
+            "AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}",
+            self.text,
+        )
+        self.assertIn(
+            'if [ "$MODE" = "auto-screen" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then',
+            self.text,
+        )
+        self.assertIn(
+            'python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" '
+            '--no-market-review $FORCE_RUN_ARG',
+            self.text,
+        )
+
+        schedule_gate = self._gate_source()
+        self.assertNotIn("AUTO_SCREEN", schedule_gate)
+        self.assertIn("cron: '0 11 * * 1-5'", self.text)
+
     def test_p0_input_is_manual_only_and_does_not_change_the_schedule_gate(self):
         self.assertIn("p0_stock_codes:", self.text)
         self.assertIn(

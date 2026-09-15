@@ -416,7 +416,9 @@ git push
    - `full` - Full analysis (stocks + market)
    - `market-only` - Market review only
    - `stocks-only` - Stock analysis only
-5. Click green **"Run workflow"** button
+   - `auto-screen` - Manual-only deterministic screening; selected candidates continue through the existing deep-analysis / decision / report chain
+5. For `auto-screen`, set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). This entry is `workflow_dispatch`-only and does not change the existing schedule.
+6. Click green **"Run workflow"** button
 
 #### 5. View Execution Logs
 
@@ -426,19 +428,19 @@ git push
 
 ### Schedule Details
 
-Default configuration: **Monday to Friday, 18:00 Beijing Time** auto-execution
+Current default: **Monday to Friday, 19:00 Beijing Time**. The strict CN trading-day gate skips analysis on non-trading days.
 
-Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
+Modify time: Edit the cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '0 10 * * 1-5'  # UTC time, +8 = Beijing time
+  - cron: '0 11 * * 1-5'  # UTC 11:00 = 19:00 Beijing Time
 ```
 
 Common cron examples:
 | Expression | Description |
 |--------|------|
-| `'0 10 * * 1-5'` | Mon-Fri 18:00 (Beijing) |
+| `'0 11 * * 1-5'` | Mon-Fri 19:00 (Beijing, current default) |
 | `'30 7 * * 1-5'` | Mon-Fri 15:30 (Beijing) |
 | `'0 10 * * *'` | Daily 18:00 (Beijing) |
 | `'0 2 * * 1-5'` | Mon-Fri 10:00 (Beijing) |

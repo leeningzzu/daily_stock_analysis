@@ -362,6 +362,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --auto-screen      # 手动 AUTO_SCREEN 后进入同一深析链
   python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
@@ -387,6 +388,20 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--auto-screen',
+        action='store_true',
+        help='手动运行确定性 AUTO_SCREEN，并将候选交给现有深析/决策/报告链'
+    )
+
+    parser.add_argument(
+        '--auto-screen-max-results',
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help='AUTO_SCREEN 最终进入深析的候选数（1-3，默认 1）'
     )
 
     parser.add_argument(
@@ -1510,6 +1525,32 @@ def main() -> int:
         return 0 if result.ok else 1
 
     p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+    auto_screen = bool(getattr(args, "auto_screen", False))
+    if auto_screen:
+        if (
+            os.getenv("GITHUB_ACTIONS") != "true"
+            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        ):
+            logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen is workflow_dispatch-only")
+            return 2
+        if (
+            p0_bounded_trial
+            or getattr(args, "stocks", None)
+            or getattr(args, "portfolio", None)
+            or getattr(args, "schedule", False)
+            or getattr(args, "market_review", False)
+            or getattr(args, "dry_run", False)
+            or getattr(args, "single_notify", False)
+        ):
+            logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: incompatible CLI arguments")
+            return 2
+        config.screening_enabled = True
+        config.single_stock_notify = False
+        args.no_market_review = True
+        logger.info(
+            "AUTO_SCREEN 手动入口已启用: strategy=momentum_quality max_results=%s",
+            getattr(args, "auto_screen_max_results", 1),
+        )
     if p0_bounded_trial:
         if (
             os.getenv("GITHUB_ACTIONS") != "true"
@@ -1692,6 +1733,19 @@ def main() -> int:
                 trigger_source="cli",
             )
             return 0
+
+        # 模式1.5: 手动 AUTO_SCREEN（workflow_dispatch-only）
+        if auto_screen:
+            logger.info("模式: AUTO_SCREEN → 共享深析链")
+            succeeded, _ = _run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                market="cn",
+                max_results=getattr(args, "auto_screen_max_results", 1),
+                raise_errors=True,
+            )
+            return 0 if succeeded else 1
 
         # 模式2: 定时任务模式
         if (args.schedule or config.schedule_enabled) and not p0_bounded_trial:

@@ -701,6 +701,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --auto-screen --auto-screen-max-results 1  # 仅 GitHub workflow_dispatch 上下文；候选数 1-3
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
@@ -740,8 +741,10 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 ```yaml
 schedule:
   # UTC 时间，北京时间 = UTC + 8
-  - cron: '0 10 * * 1-5'   # 周一到周五 18:00（北京时间）
+  - cron: '0 11 * * 1-5'   # 周一到周五 19:00（北京时间，当前默认）
 ```
+
+当前 GitHub Actions schedule 还会经过严格中国交易日 gate；周末和中国法定休市日不会进入分析。
 
 常用时间对照：
 
@@ -750,7 +753,7 @@ schedule:
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
 | 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
+| 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
 #### GitHub Actions 非交易日手动运行（Issue #461 / #466）
@@ -772,9 +775,14 @@ schedule:
 手动触发步骤：
 
 1. 打开 `Actions → 每日股票分析 → Run workflow`
-2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
-3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
-4. 点击 `Run workflow`
+2. 选择 `mode`（`full` / `market-only` / `stocks-only` / `auto-screen`）
+3. 若选择 `auto-screen`，将 `auto_screen_max_results` 设为 `1`、`2` 或 `3`（默认 `1`）；该模式仅允许人工 `workflow_dispatch`，固定复用现有 deterministic screening → shared deep-analysis / canonical decision / report consumer，不改变自动计划或 `SPECIFIED_CODES` 路径。
+4. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
+5. 点击 `Run workflow`
+
+#### AUTO_SCREEN 有界人工入口
+
+`mode=auto-screen` 只负责选择谁进入深析：筛选阶段关闭 LLM ranking，最终候选数量硬限制为 1–3，并交给现有 `run_full_analysis` / `StockAnalysisPipeline` 继续分析。最终公开动作仍由既有 canonical factor/decision owner 决定，screening score 不代表胜率或校准概率。当前入口是人工验收面，不会把现有定时任务自动切换为 AUTO_SCREEN。
 
 #### P0 有界指定股票验收
 

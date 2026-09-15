@@ -426,6 +426,81 @@ class MainScheduleModeTestCase(unittest.TestCase):
         _, _, stock_codes = run_full_analysis.call_args.args
         self.assertEqual(stock_codes, ["005930.KS"])
 
+    def test_auto_screen_shared_analysis_feeds_codes_into_existing_full_analysis(self) -> None:
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        resolution = {
+            "stock_codes": ["600519", "000001"],
+            "provenance": {
+                "selection_source": "auto_screen",
+                "strategy": "momentum_quality",
+                "run_id": "screen-run-1",
+            },
+        }
+
+        with (
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ) as resolve_targets,
+            patch("main.run_full_analysis", return_value=True) as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                market="cn",
+                max_results=2,
+                selection_seed="seed-1",
+                raise_errors=True,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        resolve_targets.assert_called_once_with(
+            config,
+            strategy="momentum_quality",
+            market="cn",
+            max_results=2,
+            selection_seed="seed-1",
+        )
+        run_full_analysis.assert_called_once_with(
+            config,
+            args,
+            ["600519", "000001"],
+            raise_errors=True,
+        )
+
+    def test_auto_screen_shared_analysis_skips_full_analysis_when_no_candidates(self) -> None:
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        resolution = {
+            "stock_codes": [],
+            "provenance": {
+                "selection_source": "auto_screen",
+                "strategy": "momentum_quality",
+                "run_id": "screen-run-empty",
+            },
+        }
+
+        with (
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.run_full_analysis") as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                max_results=2,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        run_full_analysis.assert_not_called()
+
     def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
         args = self._make_args(portfolio="futu")
         config = self._make_config(run_immediately=True)

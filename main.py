@@ -1174,6 +1174,51 @@ def run_full_analysis(
         return False
 
 
+def _run_auto_screen_shared_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    strategy: str,
+    market: str = "cn",
+    max_results: int = 5,
+    selection_seed: str = "",
+    raise_errors: bool = False,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Feed deterministic AUTO_SCREEN candidates into the existing analysis shell."""
+    from src.services.screening_service import resolve_auto_screen_analysis_targets
+
+    resolution = resolve_auto_screen_analysis_targets(
+        config,
+        strategy=strategy,
+        market=market,
+        max_results=max_results,
+        selection_seed=selection_seed,
+    )
+    stock_codes = list(resolution.get("stock_codes") or [])
+    if not stock_codes:
+        logger.info(
+            "AUTO_SCREEN 未产生候选，跳过个股深析: strategy=%s market=%s",
+            strategy,
+            market,
+        )
+        return True, resolution
+
+    provenance = resolution.get("provenance") or {}
+    logger.info(
+        "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s codes=%s",
+        provenance.get("strategy") or strategy,
+        provenance.get("run_id") or "-",
+        ",".join(stock_codes),
+    )
+    succeeded = run_full_analysis(
+        config,
+        args,
+        stock_codes,
+        raise_errors=raise_errors,
+    )
+    return succeeded, resolution
+
+
 def run_scheduled_analysis(
     config: Config,
     args: argparse.Namespace,

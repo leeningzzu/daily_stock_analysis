@@ -952,6 +952,11 @@ def run_full_analysis(
             p0_suppress_notification=(
                 p0_bounded_trial and bool(getattr(args, "auto_screen_bounded_live", False))
             ),
+            p0_acceptance_context=(
+                getattr(args, "auto_screen_acceptance_context", None)
+                if p0_bounded_trial
+                else None
+            ),
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -1234,6 +1239,7 @@ def _run_auto_screen_shared_analysis(
         )
         return True, resolution
 
+    provenance = resolution.get("provenance") or {}
     analysis_args = args
     if bounded_live:
         if len(stock_codes) != 1:
@@ -1247,13 +1253,56 @@ def _run_auto_screen_shared_analysis(
         analysis_args.p0_bounded_trial = True
         analysis_args.no_notify = True
         _apply_p0_runtime_config(config, analysis_args)
+        selected_candidates = []
+        for candidate in provenance.get("selected_candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            selected_candidates.append(
+                {
+                    key: candidate.get(key)
+                    for key in (
+                        "rank",
+                        "code",
+                        "name",
+                        "score",
+                        "screen_score",
+                        "reason",
+                        "risk_level",
+                        "risk_flags",
+                        "industry",
+                    )
+                }
+            )
+        analysis_args.auto_screen_acceptance_context = {
+            "schema_version": "auto-screen-acceptance-receipt-v1",
+            "github": {
+                "run_id": str(os.getenv("GITHUB_RUN_ID", "") or ""),
+                "run_number": str(os.getenv("GITHUB_RUN_NUMBER", "") or ""),
+                "run_attempt": str(os.getenv("GITHUB_RUN_ATTEMPT", "") or ""),
+                "head_sha": str(os.getenv("GITHUB_SHA", "") or ""),
+                "ref_name": str(os.getenv("GITHUB_REF_NAME", "") or ""),
+            },
+            "screening": {
+                "strategy": provenance.get("strategy") or strategy,
+                "strategy_version": provenance.get("strategy_version") or "",
+                "screening_run_id": provenance.get("run_id") or "",
+                "market": provenance.get("market") or market,
+                "snapshot_count": provenance.get("snapshot_count"),
+                "snapshot_source": provenance.get("snapshot_source") or "",
+                "after_filter_count": provenance.get("after_filter_count"),
+                "ranking_mode": provenance.get("ranking_mode") or "factor",
+                "selected_count": provenance.get("selected_count"),
+                "selected_candidates": selected_candidates,
+            },
+            "model_id": bounded_model,
+        }
         logger.info(
             "AUTO_SCREEN 有界真实验收复用 P0 深析边界: code=%s model=%s",
             stock_codes[0],
             bounded_model,
         )
 
-    provenance = resolution.get("provenance") or {}
+
     logger.info(
         "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s codes=%s",
         provenance.get("strategy") or strategy,

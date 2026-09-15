@@ -560,11 +560,47 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         resolution = {
             "stock_codes": ["600519"],
-            "provenance": {"strategy": "momentum_quality", "run_id": "bounded-live"},
+            "provenance": {
+                "strategy": "momentum_quality",
+                "strategy_version": "1.1",
+                "run_id": "bounded-live",
+                "market": "cn",
+                "snapshot_count": 5206,
+                "snapshot_source": "em_datacenter",
+                "after_filter_count": 40,
+                "ranking_mode": "factor",
+                "selected_count": 1,
+                "selected_candidates": [
+                    {
+                        "rank": 1,
+                        "code": "600519",
+                        "name": "贵州茅台",
+                        "score": 77.2,
+                        "screen_score": 75.8,
+                        "reason": "趋势与质量得分领先",
+                        "risk_level": "low",
+                        "risk_flags": [],
+                        "industry": "白酒",
+                    }
+                ],
+                "source_errors": ["sina unavailable"],
+                "degradation": [],
+            },
         }
 
         with (
-            patch.dict(os.environ, {"AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model"}, clear=False),
+            patch.dict(
+                os.environ,
+                {
+                    "AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_RUN_NUMBER": "20",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "GITHUB_SHA": "abc123",
+                    "GITHUB_REF_NAME": "factor-decision-v1-r002",
+                },
+                clear=False,
+            ),
             patch(
                 "src.services.screening_service.resolve_auto_screen_analysis_targets",
                 return_value=resolution,
@@ -589,6 +625,18 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertFalse(getattr(args, "p0_bounded_trial", False))
         self.assertTrue(analysis_args.p0_bounded_trial)
         self.assertTrue(analysis_args.no_notify)
+        receipt_context = analysis_args.auto_screen_acceptance_context
+        self.assertEqual(receipt_context["schema_version"], "auto-screen-acceptance-receipt-v1")
+        self.assertEqual(receipt_context["github"]["run_id"], "12345")
+        self.assertEqual(receipt_context["github"]["head_sha"], "abc123")
+        self.assertEqual(receipt_context["screening"]["screening_run_id"], "bounded-live")
+        self.assertEqual(receipt_context["screening"]["snapshot_source"], "em_datacenter")
+        self.assertEqual(receipt_context["screening"]["selected_candidates"][0]["code"], "600519")
+        self.assertEqual(
+            receipt_context["screening"]["selected_candidates"][0]["reason"],
+            "趋势与质量得分领先",
+        )
+        self.assertEqual(receipt_context["model_id"], "gemini/test-model")
         self.assertEqual(analysis_args.workers, 1)
         self.assertTrue(analysis_args.no_market_review)
         self.assertEqual(config.litellm_model, "gemini/test-model")

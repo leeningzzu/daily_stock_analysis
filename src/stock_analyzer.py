@@ -534,10 +534,10 @@ class StockTrendAnalyzer:
             result.macd_signal = "⚠️ DIF下穿零轴，趋势转弱"
         elif result.macd_dif > 0 and result.macd_dea > 0:
             result.macd_status = MACDStatus.BULLISH
-            result.macd_signal = "✓ 多头排列，持续上涨"
+            result.macd_signal = "✓ MACD DIF/DEA 均位于零轴上方，动量偏强"
         elif result.macd_dif < 0 and result.macd_dea < 0:
             result.macd_status = MACDStatus.BEARISH
-            result.macd_signal = "⚠ 空头排列，持续下跌"
+            result.macd_signal = "⚠ MACD DIF/DEA 均位于零轴下方，动量偏弱"
         else:
             result.macd_status = MACDStatus.BULLISH
             result.macd_signal = " MACD 中性区域"

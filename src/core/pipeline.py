@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 核心分析流水线
 4. 提供股票分析的核心功能
 """
 
+import json
 import logging
 import inspect
 import threading
@@ -222,6 +223,7 @@ class StockAnalysisPipeline:
     p0_bounded_trial = False
     p0_stock_codes: Tuple[str, ...] = ()
     p0_suppress_notification = False
+    p0_acceptance_context: Optional[Dict[str, Any]] = None
     
     def __init__(
         self,
@@ -241,6 +243,7 @@ class StockAnalysisPipeline:
         p0_bounded_trial: bool = False,
         p0_stock_codes: Optional[List[str]] = None,
         p0_suppress_notification: bool = False,
+        p0_acceptance_context: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化调度器
@@ -253,6 +256,15 @@ class StockAnalysisPipeline:
         self.p0_bounded_trial = bool(p0_bounded_trial)
         self.p0_stock_codes = list(p0_stock_codes or [])
         self.p0_suppress_notification = bool(p0_suppress_notification)
+        self.p0_acceptance_context = (
+            dict(p0_acceptance_context) if isinstance(p0_acceptance_context, dict) else {}
+        )
+        if self.p0_acceptance_context and not (
+            self.p0_bounded_trial and self.p0_suppress_notification
+        ):
+            raise P0BoundedTrialError(
+                "AUTO_SCREEN acceptance context requires bounded notification-suppressed mode"
+            )
         if self.p0_suppress_notification and not self.p0_bounded_trial:
             raise P0BoundedTrialError("P0 notification suppression requires bounded mode")
         if self.p0_bounded_trial and not 1 <= len(self.p0_stock_codes) <= 2:
@@ -3455,6 +3467,65 @@ class StockAnalysisPipeline:
         
         return results
 
+    def _build_auto_screen_acceptance_receipt(
+        self,
+        result: AnalysisResult,
+    ) -> Optional[Dict[str, Any]]:
+        """Project one sanitized AUTO_SCREEN acceptance receipt from existing authorities."""
+        context = getattr(self, "p0_acceptance_context", None)
+        if not isinstance(context, dict) or not context:
+            return None
+
+        dashboard = getattr(result, "dashboard", None)
+        factor = dashboard.get("factor_decision") if isinstance(dashboard, dict) else None
+        canonical = factor.get("canonical_decision") if isinstance(factor, dict) else None
+        if not isinstance(canonical, dict):
+            raise P0BoundedTrialError("AUTO_SCREEN acceptance receipt requires canonical decision")
+
+        canonical_receipt = {
+            key: canonical.get(key)
+            for key in (
+                "authority",
+                "action",
+                "public_action",
+                "evidence_state",
+                "hard_veto",
+                "reason_codes",
+            )
+        }
+        return {
+            "schema_version": "auto-screen-acceptance-receipt-v1",
+            "github": dict(context.get("github") or {}),
+            "screening": dict(context.get("screening") or {}),
+            "deep_analysis": {
+                "status": "success",
+                "model_id": str(
+                    context.get("model_id")
+                    or getattr(self.config, "litellm_model", "")
+                    or ""
+                ),
+                "model_request_count": int(
+                    getattr(self.analyzer, "p0_model_request_count", 0) or 0
+                ),
+                "worker_count": int(self.max_workers),
+                "agent_effect_count": 0,
+                "search_effect_count": 0,
+                "model_router_effect_count": 0,
+                "model_fallback_effect_count": 0,
+                "model_retry_effect_count": 0,
+                "parameter_recovery_effect_count": 0,
+                "integrity_completion_retry_effect_count": 0,
+                "market_data_retry_fallback_scope": "allowed_outside_model_effect_boundary",
+            },
+            "canonical_decision": canonical_receipt,
+            "notifications": {
+                "suppressed": True,
+                "email_count": 0,
+                "telegram_count": 0,
+                "other_count": 0,
+            },
+        }
+
     def _finalize_p0_bounded_run(
         self,
         results: List[AnalysisResult],
@@ -3481,6 +3552,17 @@ class StockAnalysisPipeline:
             raise P0BoundedTrialError("P0 full audit report is empty")
         if not send_notification:
             self.notifier.save_report_to_file(audit_report)
+            receipt = self._build_auto_screen_acceptance_receipt(results[0])
+            if receipt is not None:
+                logger.info(
+                    "AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=%s",
+                    json.dumps(
+                        receipt,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
             logger.info("P0 bounded audit saved; outbound notification suppressed for this acceptance run")
             return audit_report
 

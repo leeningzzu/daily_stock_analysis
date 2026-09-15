@@ -244,6 +244,10 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             '$AUTO_SCREEN_BOUNDED_LIVE_ARG --no-market-review $FORCE_RUN_ARG',
             self.text,
         )
+        self.assertIn("P0 model-effect boundary；行情数据源 fallback 仍可用", self.text)
+        self.assertIn("AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=", self.text)
+        self.assertIn("GITHUB_STEP_SUMMARY", self.text)
+        self.assertIn("AUTO_SCREEN_ACCEPTANCE_RECEIPT_MISSING", self.text)
 
         schedule_gate = self._gate_source()
         self.assertNotIn("AUTO_SCREEN", schedule_gate)

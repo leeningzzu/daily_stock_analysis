@@ -784,7 +784,7 @@ schedule:
 
 `mode=auto-screen` 只负责选择谁进入深析：筛选阶段关闭 LLM ranking，最终候选数量硬限制为 1–3，并交给现有 `run_full_analysis` / `StockAnalysisPipeline` 继续分析。最终公开动作仍由既有 canonical factor/decision owner 决定，screening score 不代表胜率或校准概率。当前入口是人工验收面，不会把现有定时任务自动切换为 AUTO_SCREEN。
 
-一次性真实验收可显式设置 `auto_screen_bounded_live=true`，但仅允许 `auto_screen_max_results=1`，并要求 `auto_screen_bounded_model` 提供本次明确批准的模型 ID。筛选本身仍保持 deterministic / `use_llm=False`；唯一候选产生后，深析阶段临时复用既有 P0 process-local boundary：单 worker、禁用 Agent/搜索/Router/fallback、完整性重试为 0、直连 LiteLLM `num_retries=0`。该 bounded-live 验收强制关闭 outbound notification，只保存同一 canonical `AnalysisResult` 生成的完整审计报告/Artifact；邮件/Telegram 已由既有产品验收独立证明，不在每次 AUTO_SCREEN 验收中重复发送。该开关与模型输入均只属于本次 `workflow_dispatch`，不持久化，也不改变普通 AUTO_SCREEN 或 19:00 自动计划及其通知行为。
+一次性真实验收可显式设置 `auto_screen_bounded_live=true`，但仅允许 `auto_screen_max_results=1`，并要求 `auto_screen_bounded_model` 提供本次明确批准的模型 ID。筛选本身仍保持 deterministic / `use_llm=False`；唯一候选产生后，深析阶段临时复用既有 P0 process-local boundary：单 worker、禁用 Agent/搜索/Router，模型 fallback/retry、参数恢复和完整性补全重试均为 0，直连 LiteLLM `num_retries=0`。行情数据源自身为了取得行情仍允许按既有确定性顺序 retry/fallback，它不属于模型效果边界。该 bounded-live 验收强制关闭 outbound notification，并复用现有 `selected_candidates` 与同一 canonical `AnalysisResult` 生成脱敏 `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON`，写入运行日志和 GitHub Step Summary，同时继续保存完整审计报告/Artifact；邮件/Telegram 已由既有产品验收独立证明，不在每次 AUTO_SCREEN 验收中重复发送。该开关与模型输入均只属于本次 `workflow_dispatch`，不持久化，也不改变普通 AUTO_SCREEN 或 19:00 自动计划及其通知行为。
 
 #### P0 有界指定股票验收
 

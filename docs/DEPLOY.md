@@ -461,7 +461,7 @@ git push
    - `market-only` - 仅大盘复盘
    - `stocks-only` - 仅股票分析
    - `auto-screen` - 仅人工触发的确定性自动筛选；候选会进入现有深度分析/决策/报告链
-5. 若选择 `auto-screen`，将 `auto_screen_max_results` 设为 `1`、`2` 或 `3`（默认 `1`）。该入口仅允许 `workflow_dispatch`，不会改变现有定时计划。仅做一次性真实验收时，可额外启用 `auto_screen_bounded_live=true`；此时必须将候选数固定为 `1`，并在 `auto_screen_bounded_model` 填入本次明确批准的模型 ID。该一次性输入不写入仓库配置，筛选后只复用既有 P0 的无搜索/无 fallback/无重试深析边界，并强制关闭 outbound notification，仅保存完整审计报告/Artifact；正常 19:00 Production 通知不受影响。
+5. 若选择 `auto-screen`，将 `auto_screen_max_results` 设为 `1`、`2` 或 `3`（默认 `1`）。该入口仅允许 `workflow_dispatch`，不会改变现有定时计划。仅做一次性真实验收时，可额外启用 `auto_screen_bounded_live=true`；此时必须将候选数固定为 `1`，并在 `auto_screen_bounded_model` 填入本次明确批准的模型 ID。该一次性输入不写入仓库配置；筛选后复用既有 P0 的单 worker、无 Agent/搜索/Router、无模型 fallback/retry/参数恢复/完整性补全重试边界，并强制关闭 outbound notification。行情数据源自身的确定性 retry/fallback 仍可用于取得行情，不计入模型效果边界。验收结束会把脱敏 `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON` 写入运行日志并投影到 GitHub Step Summary，同时继续保存完整审计报告/Artifact；正常 19:00 Production 通知不受影响。
 6. 点击绿色 **"Run workflow"** 按钮
 
 #### 5. 查看执行日志

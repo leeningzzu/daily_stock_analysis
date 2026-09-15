@@ -630,7 +630,7 @@ jobs:
               exit 2
             fi
             AUTO_SCREEN_BOUNDED_LIVE_ARG="--auto-screen-bounded-live"
-            echo "🧪 AUTO_SCREEN 有界真实验收：1 candidate / exact model / P0 deep-analysis boundary"
+            echo "🧪 AUTO_SCREEN 有界真实验收：1 candidate / exact model / P0 model-effect boundary；行情数据源 fallback 仍可用"
           fi
 
           # 执行分析
@@ -675,4 +675,19 @@ jobs:
           if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+          fi
+          echo ""
+          RECEIPT_LINE="$(grep -h 'AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=' logs/stock_analysis_*.log 2>/dev/null | tail -1 || true)"
+          if [ -n "$RECEIPT_LINE" ]; then
+            RECEIPT_JSON="${RECEIPT_LINE#*AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=}"
+            echo "AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=$RECEIPT_JSON"
+            {
+              echo "### AUTO_SCREEN Acceptance Receipt"
+              echo '```json'
+              printf '%s\n' "$RECEIPT_JSON"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ github.event.inputs.auto_screen_bounded_live }}" = "true" ]; then
+            echo "AUTO_SCREEN_ACCEPTANCE_RECEIPT_MISSING: bounded live requires machine-readable receipt" >&2
+            exit 2
           fi

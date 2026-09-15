@@ -308,6 +308,49 @@ def test_two_stock_trial_saves_full_audit_and_emails_compact_from_same_results()
     pipeline.notifier.send.assert_not_called()
 
 
+def test_auto_screen_acceptance_receipt_reuses_screening_and_canonical_authorities():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.p0_acceptance_context = {
+        "github": {"run_id": "12345", "head_sha": "abc123"},
+        "screening": {
+            "strategy": "momentum_quality",
+            "screening_run_id": "screen-1",
+            "selected_candidates": [
+                {
+                    "rank": 1,
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "reason": "趋势与质量得分领先",
+                }
+            ],
+        },
+        "model_id": "gemini/test-model",
+    }
+    pipeline.config = SimpleNamespace(litellm_model="fallback/model")
+    pipeline.analyzer = SimpleNamespace(p0_model_request_count=1)
+    pipeline.max_workers = 1
+    result = _canonical_result("600519")
+
+    receipt = pipeline._build_auto_screen_acceptance_receipt(result)
+
+    assert receipt["schema_version"] == "auto-screen-acceptance-receipt-v1"
+    assert receipt["github"]["run_id"] == "12345"
+    assert receipt["screening"]["selected_candidates"][0]["reason"] == "趋势与质量得分领先"
+    assert receipt["deep_analysis"]["model_id"] == "gemini/test-model"
+    assert receipt["deep_analysis"]["model_request_count"] == 1
+    assert receipt["deep_analysis"]["model_retry_effect_count"] == 0
+    assert receipt["deep_analysis"]["model_fallback_effect_count"] == 0
+    assert receipt["deep_analysis"]["market_data_retry_fallback_scope"] == "allowed_outside_model_effect_boundary"
+    assert receipt["canonical_decision"]["authority"] == "stock_trend_quality_pullback_v1"
+    assert receipt["canonical_decision"]["evidence_state"] == "PROVEN"
+    assert receipt["notifications"] == {
+        "suppressed": True,
+        "email_count": 0,
+        "telegram_count": 0,
+        "other_count": 0,
+    }
+
+
 def test_bounded_audit_only_mode_saves_full_report_without_notification_projection():
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.notifier = MagicMock()

@@ -588,6 +588,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIsNot(analysis_args, args)
         self.assertFalse(getattr(args, "p0_bounded_trial", False))
         self.assertTrue(analysis_args.p0_bounded_trial)
+        self.assertTrue(analysis_args.no_notify)
         self.assertEqual(analysis_args.workers, 1)
         self.assertTrue(analysis_args.no_market_review)
         self.assertEqual(config.litellm_model, "gemini/test-model")

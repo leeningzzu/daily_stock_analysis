@@ -221,6 +221,7 @@ class StockAnalysisPipeline:
 
     p0_bounded_trial = False
     p0_stock_codes: Tuple[str, ...] = ()
+    p0_suppress_notification = False
     
     def __init__(
         self,
@@ -239,6 +240,7 @@ class StockAnalysisPipeline:
         daily_market_context_allow_generate: bool = True,
         p0_bounded_trial: bool = False,
         p0_stock_codes: Optional[List[str]] = None,
+        p0_suppress_notification: bool = False,
     ):
         """
         初始化调度器
@@ -250,6 +252,9 @@ class StockAnalysisPipeline:
         self.config = config or get_config()
         self.p0_bounded_trial = bool(p0_bounded_trial)
         self.p0_stock_codes = list(p0_stock_codes or [])
+        self.p0_suppress_notification = bool(p0_suppress_notification)
+        if self.p0_suppress_notification and not self.p0_bounded_trial:
+            raise P0BoundedTrialError("P0 notification suppression requires bounded mode")
         if self.p0_bounded_trial and not 1 <= len(self.p0_stock_codes) <= 2:
             raise P0BoundedTrialError("P0 requires exactly one or two target stocks")
         self.max_workers = 1 if self.p0_bounded_trial else (max_workers or self.config.max_workers)
@@ -3280,7 +3285,12 @@ class StockAnalysisPipeline:
                 raise P0BoundedTrialError(
                     "P0 run must use the exact per-run target list supplied at construction"
                 )
-            if dry_run or not send_notification or merge_notification:
+            if dry_run or merge_notification:
+                raise P0BoundedTrialError("P0 requires live analysis without merge notification")
+            if self.p0_suppress_notification:
+                if send_notification:
+                    raise P0BoundedTrialError("P0 suppressed-notification mode forbids outbound notification")
+            elif not send_notification:
                 raise P0BoundedTrialError(
                     "P0 requires analysis plus one direct aggregate Email notification"
                 )
@@ -3418,7 +3428,12 @@ class StockAnalysisPipeline:
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
 
         if self.p0_bounded_trial:
-            self._finalize_p0_bounded_run(results, stock_codes, report_type)
+            self._finalize_p0_bounded_run(
+                results,
+                stock_codes,
+                report_type,
+                send_notification=send_notification,
+            )
             return results
         
         # 保存报告到本地文件（无论是否推送通知都保存）
@@ -3445,8 +3460,10 @@ class StockAnalysisPipeline:
         results: List[AnalysisResult],
         stock_codes: List[str],
         report_type: ReportType,
+        *,
+        send_notification: bool = True,
     ) -> str:
-        """Fail closed, save the full audit, then send one compact investor Email."""
+        """Fail closed, save the full audit, and optionally send one compact investor Email."""
         result_codes = [str(getattr(result, "code", "") or "") for result in results]
         if (
             len(results) != len(stock_codes)
@@ -3462,6 +3479,11 @@ class StockAnalysisPipeline:
         audit_report = self._generate_aggregate_report(results, report_type)
         if not isinstance(audit_report, str) or not audit_report.strip():
             raise P0BoundedTrialError("P0 full audit report is empty")
+        if not send_notification:
+            self.notifier.save_report_to_file(audit_report)
+            logger.info("P0 bounded audit saved; outbound notification suppressed for this acceptance run")
+            return audit_report
+
         notification_report = self.notifier.generate_brief_report(results)
         if not isinstance(notification_report, str) or not notification_report.strip():
             raise P0BoundedTrialError("P0 investor notification report is empty")

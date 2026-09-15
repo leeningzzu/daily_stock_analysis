@@ -417,7 +417,7 @@ git push
    - `market-only` - Market review only
    - `stocks-only` - Stock analysis only
    - `auto-screen` - Manual-only deterministic screening; selected candidates continue through the existing deep-analysis / decision / report chain
-5. For `auto-screen`, set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). This entry is `workflow_dispatch`-only and does not change the existing schedule. For a one-off real acceptance run only, you may also enable `auto_screen_bounded_live=true`; then the candidate count must be `1` and `auto_screen_bounded_model` must contain the exact model ID approved for that run. This one-shot input is not persisted; after screening, the run reuses the existing P0 deep-analysis boundary with no search, fallback, retry, or integrity-completion retry and sends one compact Email.
+5. For `auto-screen`, set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). This entry is `workflow_dispatch`-only and does not change the existing schedule. For a one-off real acceptance run only, you may also enable `auto_screen_bounded_live=true`; then the candidate count must be `1` and `auto_screen_bounded_model` must contain the exact model ID approved for that run. This one-shot input is not persisted; after screening, the run reuses the existing P0 deep-analysis boundary with no search, fallback, retry, or integrity-completion retry, forcibly suppresses outbound notification, and only saves the full audit report/Artifact. Normal 19:00 Production notifications are unchanged.
 6. Click green **"Run workflow"** button
 
 #### 5. View Execution Logs

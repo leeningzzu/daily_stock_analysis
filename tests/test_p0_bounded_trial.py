@@ -308,6 +308,31 @@ def test_two_stock_trial_saves_full_audit_and_emails_compact_from_same_results()
     pipeline.notifier.send.assert_not_called()
 
 
+def test_bounded_audit_only_mode_saves_full_report_without_notification_projection():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.notifier = MagicMock()
+    pipeline.notifier.generate_aggregate_report.return_value = "full canonical audit"
+    pipeline.notifier.save_report_to_file.return_value = "reports/report.md"
+    results = [_canonical_result("600519")]
+
+    report = pipeline._finalize_p0_bounded_run(
+        results,
+        ["600519"],
+        ReportType.SIMPLE,
+        send_notification=False,
+    )
+
+    assert report == "full canonical audit"
+    pipeline.notifier.generate_aggregate_report.assert_called_once_with(
+        results,
+        ReportType.SIMPLE,
+    )
+    pipeline.notifier.save_report_to_file.assert_called_once_with("full canonical audit")
+    pipeline.notifier.generate_brief_report.assert_not_called()
+    pipeline.notifier.send_to_email.assert_not_called()
+    pipeline.notifier.send.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "failure",
     ["target", "conflict", "empty_audit", "empty_notification"],

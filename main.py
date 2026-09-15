@@ -949,6 +949,9 @@ def run_full_analysis(
             daily_market_context_allow_generate=should_use_daily_market_context,
             p0_bounded_trial=p0_bounded_trial,
             p0_stock_codes=stock_codes if p0_bounded_trial else None,
+            p0_suppress_notification=(
+                p0_bounded_trial and bool(getattr(args, "auto_screen_bounded_live", False))
+            ),
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -995,7 +998,10 @@ def run_full_analysis(
         if p0_bounded_trial:
             if len(results) != len(stock_codes or []):
                 raise P0BoundedTrialError("P0 requires every target stock to succeed")
-            logger.info("P0 有界验收完成：%d 只股票、单一汇总邮件", len(results))
+            if getattr(pipeline, "p0_suppress_notification", False):
+                logger.info("P0 有界验收完成：%d 只股票、仅保存审计（通知已关闭）", len(results))
+            else:
+                logger.info("P0 有界验收完成：%d 只股票、单一汇总邮件", len(results))
             return True
 
         if should_use_daily_market_context and not market_context_summary:
@@ -1239,6 +1245,7 @@ def _run_auto_screen_shared_analysis(
         config.litellm_model = bounded_model
         analysis_args = argparse.Namespace(**vars(args))
         analysis_args.p0_bounded_trial = True
+        analysis_args.no_notify = True
         _apply_p0_runtime_config(config, analysis_args)
         logger.info(
             "AUTO_SCREEN 有界真实验收复用 P0 深析边界: code=%s model=%s",

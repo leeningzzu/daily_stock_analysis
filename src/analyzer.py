@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
@@ -49,7 +50,10 @@ from src.llm.hermes import (
     route_has_hermes,
     sanitize_hermes_error_text,
 )
-from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.generation_params import (
+    apply_litellm_generation_params,
+    resolve_litellm_temperature_directive,
+)
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
@@ -291,6 +295,10 @@ class _AllModelsFailedError(Exception):
         self.last_response_text = last_response_text
         self.last_model = last_model
         self.last_usage = last_usage or {}
+
+
+class P0ModelBoundaryError(RuntimeError):
+    """Raised when the bounded manual trial would exceed its model contract."""
 
 
 from src.utils.data_processing import normalize_report_signal_attribution
@@ -830,6 +838,32 @@ def _sanitize_trend_analysis_for_prompt(
     trend_dict["prompt_consistency_notes"] = prompt_notes
     trend_dict["prompt_trend_direction"] = trend_direction
     return trend_dict
+
+
+def _bind_execution_owned_intelligence(
+    result: "AnalysisResult",
+    news_context: Optional[str],
+) -> None:
+    """Bind news/search evidence to execution state instead of LLM self-report.
+
+    ``search_performed`` is an execution fact. When no news context was
+    actually supplied, LLM-generated intelligence has no bound source and must
+    not survive as factual report evidence. Keep an empty risk-alert list so
+    the existing integrity schema remains structurally valid without another
+    LLM request or judge.
+    """
+    has_news_context = bool(str(news_context or "").strip())
+    result.search_performed = has_news_context
+    if has_news_context:
+        return
+
+    result.news_summary = ""
+    result.market_sentiment = ""
+    result.hot_topics = ""
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
+    if dashboard is not None:
+        dashboard["intelligence"] = {"risk_alerts": []}
 
 
 def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
@@ -2263,6 +2297,10 @@ class GeminiAnalyzer:
 - 不要编造价格、财报或新闻事实
 """
 
+    P0_MAX_MESSAGE_BYTES = 65_536
+    P0_MAX_OUTPUT_TOKENS = 4_096
+    P0_MAX_MODEL_REQUESTS = 2
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -2272,6 +2310,7 @@ class GeminiAnalyzer:
         skill_instructions: Optional[str] = None,
         default_skill_policy: Optional[str] = None,
         use_legacy_default_prompt: Optional[bool] = None,
+        p0_bounded_trial: bool = False,
     ):
         """Initialize LLM Analyzer via LiteLLM.
 
@@ -2284,6 +2323,9 @@ class GeminiAnalyzer:
         self._default_skill_policy_override = default_skill_policy
         self._use_legacy_default_prompt_override = use_legacy_default_prompt
         self._resolved_prompt_state: Optional[Dict[str, Any]] = None
+        self._p0_bounded_trial = bool(p0_bounded_trial)
+        self._p0_request_lock = threading.Lock()
+        self._p0_model_request_count = 0
         self._router = None
         self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
@@ -2450,6 +2492,16 @@ class GeminiAnalyzer:
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._get_runtime_config()
+        if getattr(self, "_p0_bounded_trial", False):
+            if config.litellm_model:
+                self._litellm_available = True
+                logger.info(
+                    "Analyzer LLM: P0 bounded direct LiteLLM mode initialized "
+                    "without Router or fallback models"
+                )
+            else:
+                logger.warning("Analyzer LLM: P0 bounded mode requires LITELLM_MODEL")
+            return
         if self._get_hermes_config_error(config) is not None:
             logger.error("Analyzer LLM: Hermes channel configuration blocks legacy fallback")
             return
@@ -2785,6 +2837,129 @@ class GeminiAnalyzer:
             effective_kwargs["api_key"] = keys[0]
         effective_kwargs.update(extra_litellm_params(model, config))
         return litellm.completion(**effective_kwargs)
+
+    @property
+    def p0_model_request_count(self) -> int:
+        """Expose the bounded run counter for deterministic preflight/tests."""
+        with self._p0_request_lock:
+            return self._p0_model_request_count
+
+    def _consume_p0_model_request(self) -> None:
+        """Atomically reserve one of the run's two permitted model requests."""
+        with self._p0_request_lock:
+            if self._p0_model_request_count >= self.P0_MAX_MODEL_REQUESTS:
+                raise P0ModelBoundaryError(
+                    f"P0 model request budget exceeded: {self.P0_MAX_MODEL_REQUESTS}"
+                )
+            self._p0_model_request_count += 1
+
+    def _call_litellm_p0_bounded(
+        self,
+        prompt: str,
+        generation_config: Dict[str, Any],
+        *,
+        system_prompt: Optional[str] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Perform one direct, non-streaming LiteLLM request with no recovery."""
+        config = self._get_runtime_config()
+        backend_id = resolve_generation_backend_id(config)
+        if backend_id != LITELLM_BACKEND_ID:
+            raise P0ModelBoundaryError(
+                f"P0 requires generation_backend={LITELLM_BACKEND_ID}, got {backend_id}"
+            )
+
+        model = str(getattr(config, "litellm_model", "") or "").strip()
+        if not model:
+            raise P0ModelBoundaryError("P0 requires one configured LITELLM_MODEL")
+
+        messages = [
+            {"role": "system", "content": system_prompt or self.TEXT_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        message_bytes = len(
+            json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if message_bytes > self.P0_MAX_MESSAGE_BYTES:
+            raise P0ModelBoundaryError(
+                f"P0 request messages exceed {self.P0_MAX_MESSAGE_BYTES} UTF-8 bytes"
+            )
+
+        requested_temperature = generation_config.get("temperature", 0.7)
+        call_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": self.P0_MAX_OUTPUT_TOKENS,
+            "stream": False,
+            "num_retries": 0,
+        }
+        requested_timeout = generation_config.get("timeout")
+        if requested_timeout not in (None, ""):
+            call_kwargs["timeout"] = requested_timeout
+        call_kwargs.update(extra_litellm_params(model, config))
+        keys = get_api_keys_for_model(model, config)
+        if keys:
+            call_kwargs["api_key"] = keys[0]
+        temperature_directive = resolve_litellm_temperature_directive(
+            model,
+            model_list=getattr(config, "llm_model_list", None),
+            request_overrides=call_kwargs,
+        )
+        if not temperature_directive.omit_temperature:
+            call_kwargs["temperature"] = (
+                temperature_directive.temperature
+                if temperature_directive.temperature is not None
+                else float(requested_temperature)
+            )
+        # Reassert the P0 transport ceiling after provider-specific adaptation;
+        # unlike the standard route, no cached parameter recovery is applied.
+        call_kwargs["max_tokens"] = self.P0_MAX_OUTPUT_TOKENS
+        call_kwargs["stream"] = False
+        call_kwargs["num_retries"] = 0
+
+        self._consume_p0_model_request()
+        try:
+            response = litellm.completion(**call_kwargs)
+        except Exception as exc:
+            safe_error = self._sanitize_litellm_exception_text(
+                exc,
+                config=config,
+                model=model,
+            )
+            raise P0ModelBoundaryError(
+                f"P0 direct LiteLLM request failed: {safe_error}"
+            ) from None
+
+        content = self._extract_completion_text(response)
+        if not content:
+            raise P0ModelBoundaryError("P0 direct LiteLLM response was empty")
+        if response_validator is not None:
+            response_validator(content)
+
+        usage_model, usage_provider = resolved_model_provider_identity(
+            model,
+            getattr(config, "llm_model_list", None),
+        )
+        usage = self._normalize_usage(
+            extract_usage_payload(response),
+            model=usage_model or model,
+            provider=usage_provider,
+            messages=None if audit_context is not None else messages,
+        )
+        if audit_context is not None:
+            effective_audit_context = dict(audit_context)
+            effective_audit_context["provider"] = usage_provider
+            effective_audit_context["transport"] = "litellm-direct-p0"
+            usage = filter_prompt_cache_telemetry(
+                attach_legacy_message_stability_audit(
+                    usage,
+                    messages,
+                    effective_audit_context,
+                ),
+                config,
+            )
+        return content, model, usage
 
     def _normalize_usage(
         self,
@@ -3361,6 +3536,7 @@ class GeminiAnalyzer:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
         analysis_context_pack_summary: Optional[str] = None,
+        p0_bounded_trial: bool = False,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -3388,12 +3564,17 @@ class GeminiAnalyzer:
 
         code = context.get('code', 'Unknown')
         config = self._get_runtime_config()
+        bounded_trial = bool(
+            p0_bounded_trial or getattr(self, "_p0_bounded_trial", False)
+        )
+        if bounded_trial and news_context:
+            raise P0ModelBoundaryError("P0 bounded trial forbids search/news context")
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
         skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
         
         # 请求前增加延时（防止连续请求触发限流）
-        request_delay = config.gemini_request_delay
+        request_delay = 0 if bounded_trial else config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
             _emit_progress(65, f"{code}：LLM 请求前等待 {request_delay:.1f} 秒")
@@ -3409,7 +3590,7 @@ class GeminiAnalyzer:
                 # 最后从映射表获取
                 name = STOCK_NAME_MAP.get(code, f'股票{code}')
 
-        backend_error = self.get_generation_backend_config_error()
+        backend_error = None if bounded_trial else self.get_generation_backend_config_error()
         if backend_error is not None and not self._can_use_generation_fallback(backend_error):
             details = backend_error.details or {}
             field = str(details.get("field") or "GENERATION_BACKEND")
@@ -3460,7 +3641,9 @@ class GeminiAnalyzer:
             )
 
         # 如果模型不可用，返回默认结果
-        if not self.is_available():
+        if (bounded_trial and not getattr(config, "litellm_model", None)) or (
+            not bounded_trial and not self.is_available()
+        ):
             return AnalysisResult(
                 code=code,
                 name=name,
@@ -3544,7 +3727,9 @@ class GeminiAnalyzer:
             # 设置生成配置
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
+                "max_output_tokens": (
+                    self.P0_MAX_OUTPUT_TOKENS if bounded_trial else 8192
+                ),
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
@@ -3553,20 +3738,33 @@ class GeminiAnalyzer:
             # 使用 litellm 调用（支持完整性校验重试）
             current_prompt = prompt
             retry_count = 0
-            max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
+            max_retries = (
+                0
+                if bounded_trial
+                else config.report_integrity_retry if config.report_integrity_enabled else 0
+            )
 
             while True:
                 start_time = time.time()
                 try:
-                    response_text, model_used, llm_usage = self._call_litellm(
-                        current_prompt,
-                        generation_config,
-                        system_prompt=system_prompt,
-                        stream=True,
-                        stream_progress_callback=stream_progress_callback,
-                        response_validator=self._validate_json_response,
-                        audit_context=legacy_audit_context,
-                    )
+                    if bounded_trial:
+                        response_text, model_used, llm_usage = self._call_litellm_p0_bounded(
+                            current_prompt,
+                            generation_config,
+                            system_prompt=system_prompt,
+                            response_validator=self._validate_json_response,
+                            audit_context=legacy_audit_context,
+                        )
+                    else:
+                        response_text, model_used, llm_usage = self._call_litellm(
+                            current_prompt,
+                            generation_config,
+                            system_prompt=system_prompt,
+                            stream=True,
+                            stream_progress_callback=stream_progress_callback,
+                            response_validator=self._validate_json_response,
+                            audit_context=legacy_audit_context,
+                        )
                 except _AllModelsFailedError as exc:
                     if exc.last_response_text is not None:
                         logger.warning(
@@ -3601,7 +3799,7 @@ class GeminiAnalyzer:
                 # 解析响应
                 result = self._parse_response(response_text, code, name)
                 result.raw_response = response_text
-                result.search_performed = bool(news_context)
+                _bind_execution_owned_intelligence(result, news_context)
                 result.market_snapshot = self._build_market_snapshot(context)
                 result.model_used = model_used
                 result.report_language = report_language
@@ -4081,6 +4279,15 @@ class GeminiAnalyzer:
         else:
             prompt += """
 未搜索到该股票近期的相关新闻。请主要依据技术面数据进行分析。
+
+**无新闻证据硬约束**：
+- `search_performed` 必须为 false；
+- `dashboard.intelligence.latest_news` 必须为空字符串；
+- `dashboard.intelligence.risk_alerts` 必须为空数组；
+- `dashboard.intelligence.positive_catalysts` 必须为空数组；
+- `dashboard.intelligence.earnings_outlook` 与 `sentiment_summary` 必须为空字符串；
+- `news_summary`、`market_sentiment`、`hot_topics` 必须为空字符串；
+- 未提供历史估值分位或同行比较时，禁止声称“历史低位/合理区间/相对便宜”等相对估值结论。
 """
 
         # 注入缺失数据警告

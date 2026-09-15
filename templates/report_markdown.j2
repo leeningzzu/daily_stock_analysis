@@ -21,10 +21,75 @@
 {% set core = dashboard.get('core_conclusion') or {} %}
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set data_persp = dashboard.get('data_perspective') or {} %}
+{% set factor_decision = dashboard.get('factor_decision') or {} %}
+{% set investor_brief = factor_decision.get('investor_brief') or {} %}
+{% set investor_brief_valid = report_language == 'zh' and investor_brief.get('schema_version') == 'investor-brief-v1' and investor_brief.get('one_line_conclusion') and investor_brief.get('fused_paragraph') %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
-{% if intel %}
+{% if investor_brief_valid %}
+### 🧭 投资者简报
+
+**综合结论**: {{ investor_brief.get('one_line_conclusion') }}
+
+{{ investor_brief.get('fused_paragraph') }}
+
+{% set explanation_status = factor_decision.get('explanation_status') or {} %}
+{% if explanation_status.get('state') == 'UNAVAILABLE' and explanation_status.get('mode') == 'DETERMINISTIC_DEGRADED' %}**解释层**: LLM 暂不可用；本报告仅依据已证明的确定性证据生成。
+{% endif %}
+{% if factor_decision.get('composite_score') is number %}**技术参考分**: {{ factor_decision.get('composite_score')|round|int }}/100（仅作现有技术排序/解释，不代表独立证据投票、胜率或概率）
+{% endif %}
+{% set current_price = investor_brief.get('current_price') or {} %}
+{% if current_price.get('value') is not none and current_price.get('value') != '' %}**当前价格**: {{ current_price.get('value') }}
+{% endif %}
+{% set valuation = investor_brief.get('valuation') or {} %}
+{% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**估值**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
+{% endif %}
+{% set key_levels = investor_brief.get('key_levels') or {} %}
+{% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}{{ key_levels.get('support_label', '结构支撑') }} {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}{{ key_levels.get('resistance_label', '结构压力') }} {{ key_levels.get('resistance') }}{% endif %}
+{% endif %}
+{% if investor_brief.get('trigger') %}**触发条件**: {{ investor_brief.get('trigger') }}
+{% endif %}
+{% if investor_brief.get('invalidation') %}**失效条件**: {{ investor_brief.get('invalidation') }}
+{% endif %}
+{% if investor_brief.get('coverage_text') %}**周期覆盖**: {{ investor_brief.get('coverage_text') }}
+{% endif %}
+{% set scenario = investor_brief.get('scenario') or {} %}
+{% set alternative = scenario.get('alternative') or {} %}
+{% if alternative.get('status') == 'READY' and alternative.get('condition') %}**备选情景**: {{ alternative.get('condition') }}
+{% endif %}
+{% set historical_reference = investor_brief.get('historical_reference') or {} %}
+{% if historical_reference and historical_reference.get('available') == false %}**历史参考胜率**: 暂不提供{% if historical_reference.get('reason') %}（{{ historical_reference.get('reason') }}）{% endif %}
+{% elif historical_reference.get('available') == true and historical_reference.get('positive_rate') is number and historical_reference.get('n') is number %}**历史参考胜率**: {% if historical_reference.get('positive_rate') <= 1 %}{{ (historical_reference.get('positive_rate') * 100)|round(1) }}{% else %}{{ historical_reference.get('positive_rate')|round(1) }}{% endif %}%（n={{ historical_reference.get('n')|int }}）
+{% endif %}
+{% set current_probability = factor_decision.get('current_probability') or {} %}
+{% if current_probability.get('display') %}**当前机会概率**: {{ current_probability.get('display') }}
+{% endif %}
+{% if investor_brief.get('risk_notes') %}**主要风险**:
+{% for item in investor_brief.get('risk_notes')[:2] %}- {{ item }}
+{% endfor %}
+{% endif %}
+{% set timeframe_thesis = investor_brief.get('timeframe_thesis') or {} %}
+{% set monthly_thesis = timeframe_thesis.get('monthly') or {} %}
+{% set weekly_thesis = timeframe_thesis.get('weekly') or {} %}
+{% set daily_thesis = timeframe_thesis.get('daily') or {} %}
+{% set bridge_thesis = timeframe_thesis.get('60m') or {} %}
+{% if (monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary')) or (weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary')) or (daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary')) or (bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary')) %}**多周期量价与形态**:
+{% if monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary') %}- 月线：{{ monthly_thesis.get('summary') }}
+{% endif %}
+{% if weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary') %}- 周线：{{ weekly_thesis.get('summary') }}
+{% endif %}
+{% if daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary') %}- 日线：{{ daily_thesis.get('summary') }}
+{% endif %}
+{% if bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary') %}- 60m：{{ bridge_thesis.get('summary') }}
+{% endif %}
+{% endif %}
+{% set short_term = investor_brief.get('short_term_execution_panel') or {} %}
+{% if short_term.get('status') == 'READY' and short_term.get('summary') %}**短线波段 30/15/5m**: {{ short_term.get('summary') }}
+{% endif %}
+
+{% endif %}
+{% if intel and not investor_brief_valid %}
 ### 📰 {{ labels.info_heading }}
 
 {% if intel.get('sentiment_summary') %}
@@ -54,6 +119,7 @@
 
 {% endif %}
 
+{% if not investor_brief_valid %}
 ### 📌 {{ labels.core_conclusion_heading }}
 
 **{{ e.signal_emoji }} {{ e.signal_text }}** | {{ localize_trend_prediction(result.trend_prediction, report_language) }}
@@ -68,6 +134,43 @@
 |---------|---------|
 | 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
 | 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
+{% endif %}
+
+{% endif %}
+{% if not investor_brief_valid %}
+{% if report_language == 'zh' and factor_decision %}
+### 🧭 综合评估
+
+{% if factor_decision.get('conclusion') %}**结论**: {{ factor_decision.get('conclusion') }}
+
+{% endif %}
+{% if factor_decision.get('composite_score') is number %}**技术综合评分**: {{ factor_decision.get('composite_score')|round|int }}/100（用于排序和解释，不代表胜率或概率）
+{% endif %}
+{% set historical_reference = factor_decision.get('historical_reference') or {} %}
+{% if historical_reference.get('display') %}**历史参考胜率**: {{ historical_reference.get('display') }}
+{% endif %}
+{% set current_probability = factor_decision.get('current_probability') or {} %}
+{% if current_probability.get('display') %}**当前机会概率**: {{ current_probability.get('display') }}
+{% endif %}
+
+{% if factor_decision.get('why') %}**为什么**:
+{% for item in factor_decision.get('why')[:4] %}- {{ item }}
+{% endfor %}
+{% endif %}
+{% if factor_decision.get('action_condition') %}**操作条件**: {{ factor_decision.get('action_condition') }}
+{% endif %}
+{% if factor_decision.get('invalidation_condition') %}**失效条件**: {{ factor_decision.get('invalidation_condition') }}
+{% endif %}
+{% if factor_decision.get('valuation') %}**{{ factor_decision.get('valuation') }}**
+{% endif %}
+{% if factor_decision.get('cost_structure') %}{{ factor_decision.get('cost_structure') }}
+{% endif %}
+{% if factor_decision.get('risk_notes') %}**主要风险**:
+{% for item in factor_decision.get('risk_notes')[:3] %}- {{ item }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
 {% endif %}
 
 {{ market_snapshot(result) }}
@@ -89,8 +192,9 @@
 | {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
 | {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
 | {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
-| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
+{% if not investor_brief_valid %}| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
 | {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
+{% endif %}
 {% endif %}
 
 {% set vol_data = data_persp.get('volume_analysis', {}) %}
@@ -142,7 +246,7 @@
 
 {% set signal_attr = dashboard.get('signal_attribution') or {} %}
 {% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
-{% if signal_attribution_has_content(signal_attr) %}
+{% if signal_attribution_has_content(signal_attr) and not investor_brief_valid %}
 ### 🎯 {{ labels.signal_attribution_heading }}
 
 {% if signal_attr_weights %}

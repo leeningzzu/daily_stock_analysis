@@ -2540,6 +2540,118 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["candidates"][0]["price"], 1688.0)
         self.assertEqual(payload["candidates"][0]["industry"], "Baijiu")
 
+    def test_auto_screen_analysis_targets_use_deterministic_shared_candidate_path(self) -> None:
+        config = self._config(enabled=True)
+        fake_module = _make_screening_core(
+            screen=MagicMock(
+                return_value={
+                    "strategy": "dual_low",
+                    "strategy_version": "1.2",
+                    "market": "cn",
+                    "run_id": "auto-screen-run",
+                    "snapshot_count": 120,
+                    "snapshot_source": "sina",
+                    "after_filter_count": 8,
+                    "llm_ranked": False,
+                    "ranking_mode": "factor",
+                    "post_analyzers": ["scorecard"],
+                    "deep_analysis_requested": False,
+                    "picks": [
+                        {
+                            "rank": 1,
+                            "code": "600519",
+                            "name": "贵州茅台",
+                            "final_score": 88.0,
+                            "screen_score": 86.0,
+                            "ranking_reason": "deterministic rank 1",
+                            "risk_flags": ["valuation"],
+                        },
+                        {
+                            "rank": 2,
+                            "code": "000001",
+                            "name": "平安银行",
+                            "final_score": 82.0,
+                            "screen_score": 81.0,
+                            "ranking_reason": "deterministic rank 2",
+                        },
+                    ],
+                }
+            )
+        )
+
+        with (
+            _patch_screening_core(fake_module),
+            patch("src.services.screening_service._enrich_candidates_with_dsa") as post_rank_enrichment,
+            patch("src.services.screening_service._screening_litellm_headers") as llm_headers,
+        ):
+            payload = screening_service.resolve_auto_screen_analysis_targets(
+                config,
+                strategy="dual_low",
+                market="cn",
+                max_results=2,
+                selection_seed="production-seed",
+            )
+
+        fake_module.screen.assert_called_once_with(
+            "dual_low",
+            market="cn",
+            max_output=2,
+            use_llm=False,
+            selection_seed="production-seed",
+            context=ANY,
+            config=ANY,
+            progress_callback=None,
+            daily_history_fetcher=ANY,
+            post_analyzers=["scorecard"],
+        )
+        llm_headers.assert_not_called()
+        post_rank_enrichment.assert_not_called()
+        self.assertEqual(payload["stock_codes"], ["600519", "000001"])
+        provenance = payload["provenance"]
+        self.assertEqual(provenance["selection_source"], "auto_screen")
+        self.assertEqual(provenance["strategy"], "dual_low")
+        self.assertEqual(provenance["run_id"], "auto-screen-run")
+        self.assertEqual(provenance["ranking_mode"], "factor")
+        self.assertFalse(provenance["llm_ranked"])
+        self.assertEqual(provenance["post_analyzers"], ["scorecard"])
+        self.assertFalse(provenance["deep_analysis_requested"])
+        self.assertEqual(provenance["selected_count"], 2)
+        self.assertEqual(
+            provenance["production_boundary"],
+            {
+                "llm_ranking": False,
+                "remote_dsa_post_analyzer": False,
+                "post_rank_news_search_enrichment": False,
+                "final_action_authority": "StockAnalysisPipeline/factor_decision",
+            },
+        )
+
+    def test_auto_screen_analysis_targets_fail_closed_if_llm_ranking_reappears(self) -> None:
+        config = self._config(enabled=True)
+        fake_module = _make_screening_core(
+            screen=MagicMock(
+                return_value={
+                    "strategy": "dual_low",
+                    "market": "cn",
+                    "run_id": "unexpected-llm-run",
+                    "llm_ranked": True,
+                    "ranking_mode": "llm",
+                    "post_analyzers": ["scorecard"],
+                    "deep_analysis_requested": False,
+                    "picks": [{"rank": 1, "code": "600519", "final_score": 88.0}],
+                }
+            )
+        )
+
+        with _patch_screening_core(fake_module):
+            with self.assertRaisesRegex(RuntimeError, "LLM ranking executed"):
+                screening_service.resolve_auto_screen_analysis_targets(
+                    config,
+                    strategy="dual_low",
+                    market="cn",
+                    max_results=1,
+                )
+
     def test_screen_prefers_dsa_daily_history_for_screening_enrichment(self) -> None:
         config = self._config(enabled=True)
         from src.services.screening import daily as daily_module

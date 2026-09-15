@@ -145,3 +145,83 @@ class KoreanReportLanguageTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# P0_CANONICAL_REPORT_LANGUAGE_REGRESSION_PY_R001
+import inspect as _pyrec_inspect
+
+from src.report_language import (
+    localize_strategy_signal as _pyrec_localize_strategy_signal,
+    localize_strategy_synthesis_summary as _pyrec_localize_strategy_synthesis_summary,
+    normalize_strategy_synthesis_payload as _pyrec_normalize_strategy_synthesis_payload,
+)
+
+
+def _pyrec_call_language_aware(fn, value):
+    signature = _pyrec_inspect.signature(fn)
+    parameters = list(signature.parameters.values())
+    required_positionals = [
+        p
+        for p in parameters
+        if p.kind
+        in (
+            _pyrec_inspect.Parameter.POSITIONAL_ONLY,
+            _pyrec_inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        and p.default is _pyrec_inspect.Parameter.empty
+    ]
+
+    if len(required_positionals) <= 1:
+        for p in parameters:
+            if (
+                p.kind == _pyrec_inspect.Parameter.KEYWORD_ONLY
+                and p.name in {"language", "lang"}
+            ):
+                return fn(value, **{p.name: "zh"})
+        return fn(value)
+
+    second = required_positionals[1]
+    if second.name in {"language", "lang"}:
+        return fn(value, "zh")
+
+    raise AssertionError(
+        f"Unexpected language-aware signature for {fn.__name__}: {signature}"
+    )
+
+
+def test_p0_watch_avoid_override_legacy_hold_only_in_renderer_safe_copy():
+    for action, expected in (
+        ("watch", "\u89c2\u671b"),
+        ("avoid", "\u56de\u907f"),
+    ):
+        original = {
+            "authority": "stock_trend_quality_pullback_v1",
+            "canonical_public_action": action,
+            "final_signal": "hold",
+        }
+
+        normalized = _pyrec_normalize_strategy_synthesis_payload(original)
+
+        assert original["final_signal"] == "hold"
+        assert normalized["final_signal"] == action
+        assert _pyrec_call_language_aware(
+            _pyrec_localize_strategy_signal, action
+        ) == expected
+
+        summary = str(
+            _pyrec_call_language_aware(
+                _pyrec_localize_strategy_synthesis_summary,
+                original,
+            )
+        )
+        assert expected in summary
+        assert "\u6301\u6709" not in summary
+
+
+def test_non_p0_legacy_hold_remains_hold():
+    original = {"final_signal": "hold"}
+    normalized = _pyrec_normalize_strategy_synthesis_payload(original)
+
+    assert normalized["final_signal"] == "hold"
+    assert _pyrec_call_language_aware(
+        _pyrec_localize_strategy_signal, "hold"
+    ) == "\u6301\u6709"

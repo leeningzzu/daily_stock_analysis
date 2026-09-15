@@ -416,7 +416,9 @@ git push
    - `full` - Full analysis (stocks + market)
    - `market-only` - Market review only
    - `stocks-only` - Stock analysis only
-5. Click green **"Run workflow"** button
+   - `auto-screen` - Manual-only deterministic screening; selected candidates continue through the existing deep-analysis / decision / report chain
+5. For `auto-screen`, set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). This entry is `workflow_dispatch`-only and does not change the existing schedule. For a one-off real acceptance run only, you may also enable `auto_screen_bounded_live=true`; then the candidate count must be `1` and `auto_screen_bounded_model` must contain the exact model ID approved for that run. This one-shot input is not persisted. After screening, the run reuses the existing P0 boundary with one worker, no Agent/search/Router, and zero model fallback/retry, parameter recovery, or integrity-completion retry, while forcibly suppressing outbound notification. Deterministic market-data provider retry/fallback may still occur to obtain market data and is outside the model-effect boundary. The run emits a sanitized `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON` into the logs and GitHub Step Summary while retaining the full audit report/Artifact. Normal 19:00 Production notifications are unchanged.
+6. Click green **"Run workflow"** button
 
 #### 5. View Execution Logs
 
@@ -426,19 +428,19 @@ git push
 
 ### Schedule Details
 
-Default configuration: **Monday to Friday, 18:00 Beijing Time** auto-execution
+Current default: **Monday to Friday, 19:00 Beijing Time**. The strict CN trading-day gate skips analysis on non-trading days.
 
-Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
+Modify time: Edit the cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '0 10 * * 1-5'  # UTC time, +8 = Beijing time
+  - cron: '0 11 * * 1-5'  # UTC 11:00 = 19:00 Beijing Time
 ```
 
 Common cron examples:
 | Expression | Description |
 |--------|------|
-| `'0 10 * * 1-5'` | Mon-Fri 18:00 (Beijing) |
+| `'0 11 * * 1-5'` | Mon-Fri 19:00 (Beijing, current default) |
 | `'30 7 * * 1-5'` | Mon-Fri 15:30 (Beijing) |
 | `'0 10 * * *'` | Daily 18:00 (Beijing) |
 | `'0 2 * * 1-5'` | Mon-Fri 10:00 (Beijing) |

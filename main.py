@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -81,6 +82,88 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
+_P0_STOCK_INDEX_PATH = Path(__file__).resolve().parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
+_P0_CODE_PATTERN = re.compile(r"^(?:(SH|SZ)\.?)?(\d{6})(?:\.(SH|SZ))?$")
+_P0_INDEX_CACHE: Optional[Dict[str, str]] = None
+
+
+class P0BoundedTrialError(RuntimeError):
+    """Fail-closed boundary error for the manual P0 product trial."""
+
+
+def _load_p0_cn_equity_index() -> Dict[str, str]:
+    """Load the checked-in ordinary-CN-stock identity set without network access."""
+    global _P0_INDEX_CACHE
+    if _P0_INDEX_CACHE is not None:
+        return _P0_INDEX_CACHE
+    try:
+        payload = json.loads(_P0_STOCK_INDEX_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise P0BoundedTrialError(f"P0 stock identity index unavailable: {exc}") from exc
+
+    index: Dict[str, str] = {}
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, list) or len(item) < 9:
+            continue
+        canonical = str(item[0] or "").strip().upper()
+        display = str(item[1] or "").strip()
+        market = str(item[6] or "").strip().upper()
+        instrument_type = str(item[7] or "").strip().lower()
+        enabled = item[8] is True
+        if (
+            market == "CN"
+            and instrument_type == "stock"
+            and enabled
+            and display.isdigit()
+            and len(display) == 6
+            and canonical.endswith((".SH", ".SZ"))
+        ):
+            index[display] = canonical.rsplit(".", 1)[1]
+    if not index:
+        raise P0BoundedTrialError("P0 stock identity index contains no eligible CN stocks")
+    _P0_INDEX_CACHE = index
+    return index
+
+
+def validate_p0_stock_codes(raw_codes: str) -> List[str]:
+    """Return exactly 1-2 checked-in Shanghai/Shenzhen ordinary A-share codes."""
+    tokens = [str(value or "").strip().upper() for value in split_stock_list(raw_codes)]
+    if not 1 <= len(tokens) <= 2:
+        raise P0BoundedTrialError("P0 requires exactly one or two stock codes")
+
+    stock_index = _load_p0_cn_equity_index()
+    normalized: List[str] = []
+    for token in tokens:
+        match = _P0_CODE_PATTERN.fullmatch(token)
+        if match is None:
+            raise P0BoundedTrialError(f"P0 rejects non-CN or unsupported symbol: {token}")
+        prefix_exchange, code, suffix_exchange = match.groups()
+        if prefix_exchange and suffix_exchange and prefix_exchange != suffix_exchange:
+            raise P0BoundedTrialError(f"P0 rejects conflicting exchange identity: {token}")
+        expected_exchange = stock_index.get(code)
+        if expected_exchange is None:
+            raise P0BoundedTrialError(f"P0 rejects ETF, index, inactive, or unknown CN symbol: {token}")
+        explicit_exchange = prefix_exchange or suffix_exchange
+        if explicit_exchange and explicit_exchange != expected_exchange:
+            raise P0BoundedTrialError(f"P0 rejects conflicting exchange identity: {token}")
+        if code in normalized:
+            raise P0BoundedTrialError(f"P0 rejects duplicate stock code: {code}")
+        normalized.append(code)
+    return normalized
+
+
+def _apply_p0_runtime_config(config: Config, args: argparse.Namespace) -> None:
+    """Apply process-local trial bounds without mutating persisted config or STOCK_LIST."""
+    config.single_stock_notify = False
+    config.merge_email_notification = False
+    config.report_type = "simple"
+    config.report_language = "zh"
+    config.report_integrity_retry = 0
+    config.agent_mode = False
+    config.agent_skills = []
+    config.analysis_delay = 0
+    args.workers = 1
+    args.no_market_review = True
 
 
 def _get_active_env_path() -> Path:
@@ -279,6 +362,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --auto-screen      # 手动 AUTO_SCREEN 后进入同一深析链
   python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
@@ -304,6 +388,32 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--auto-screen',
+        action='store_true',
+        help='手动运行确定性 AUTO_SCREEN，并将候选交给现有深析/决策/报告链'
+    )
+
+    parser.add_argument(
+        '--auto-screen-max-results',
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help='AUTO_SCREEN 最终进入深析的候选数（1-3，默认 1）'
+    )
+
+    parser.add_argument(
+        '--auto-screen-bounded-live',
+        action='store_true',
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        '--p0-bounded-trial',
+        action='store_true',
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
@@ -728,6 +838,8 @@ def run_full_analysis(
     这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
+    p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
@@ -751,7 +863,8 @@ def run_full_analysis(
     from src.core.pipeline import StockAnalysisPipeline
 
     try:
-        _refresh_stock_index_cache_for_analysis(config)
+        if not p0_bounded_trial:
+            _refresh_stock_index_cache_for_analysis(config)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
 
@@ -834,6 +947,16 @@ def run_full_analysis(
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
             daily_market_context_allow_generate=should_use_daily_market_context,
+            p0_bounded_trial=p0_bounded_trial,
+            p0_stock_codes=stock_codes if p0_bounded_trial else None,
+            p0_suppress_notification=(
+                p0_bounded_trial and bool(getattr(args, "auto_screen_bounded_live", False))
+            ),
+            p0_acceptance_context=(
+                getattr(args, "auto_screen_acceptance_context", None)
+                if p0_bounded_trial
+                else None
+            ),
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -876,6 +999,15 @@ def run_full_analysis(
                 merge_notification=merge_notification,
                 current_time=analysis_reference_time,
             )
+
+        if p0_bounded_trial:
+            if len(results) != len(stock_codes or []):
+                raise P0BoundedTrialError("P0 requires every target stock to succeed")
+            if getattr(pipeline, "p0_suppress_notification", False):
+                logger.info("P0 有界验收完成：%d 只股票、仅保存审计（通知已关闭）", len(results))
+            else:
+                logger.info("P0 有界验收完成：%d 只股票、单一汇总邮件", len(results))
+            return True
 
         if should_use_daily_market_context and not market_context_summary:
             (
@@ -996,11 +1128,10 @@ def run_full_analysis(
             if market_report:
                 parts.append(f"# 📈 大盘复盘\n\n{market_report}")
             if results:
-                dashboard_content = pipeline.notifier.generate_aggregate_report(
-                    results,
-                    getattr(config, 'report_type', 'simple'),
-                )
-                parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
+                investor_content = pipeline.notifier.generate_brief_report(results)
+                if not isinstance(investor_content, str) or not investor_content.strip():
+                    raise ValueError("merged investor notification projection is empty")
+                parts.append(f"# 🚀 个股投资者简报\n\n{investor_content}")
             if parts:
                 combined_content = "\n\n---\n\n".join(parts)
                 if pipeline.notifier.is_available():
@@ -1070,9 +1201,121 @@ def run_full_analysis(
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
-        if raise_errors:
+        if raise_errors or p0_bounded_trial:
             raise
         return False
+
+
+def _run_auto_screen_shared_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    strategy: str,
+    market: str = "cn",
+    max_results: int = 5,
+    selection_seed: str = "",
+    raise_errors: bool = False,
+    bounded_live: bool = False,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Feed deterministic AUTO_SCREEN candidates into the existing analysis shell."""
+    from src.services.screening_service import resolve_auto_screen_analysis_targets
+
+    if bounded_live and max_results != 1:
+        raise P0BoundedTrialError("AUTO_SCREEN bounded live requires max_results=1")
+
+    resolution = resolve_auto_screen_analysis_targets(
+        config,
+        strategy=strategy,
+        market=market,
+        max_results=max_results,
+        selection_seed=selection_seed,
+    )
+    stock_codes = list(resolution.get("stock_codes") or [])
+    if not stock_codes:
+        logger.info(
+            "AUTO_SCREEN 未产生候选，跳过个股深析: strategy=%s market=%s",
+            strategy,
+            market,
+        )
+        return True, resolution
+
+    provenance = resolution.get("provenance") or {}
+    analysis_args = args
+    if bounded_live:
+        if len(stock_codes) != 1:
+            raise P0BoundedTrialError("AUTO_SCREEN bounded live requires exactly one screened candidate")
+        stock_codes = validate_p0_stock_codes(",".join(stock_codes))
+        bounded_model = str(os.getenv("AUTO_SCREEN_BOUNDED_MODEL", "") or "").strip()
+        if not bounded_model:
+            raise P0BoundedTrialError("AUTO_SCREEN bounded live requires an exact model identity")
+        config.litellm_model = bounded_model
+        analysis_args = argparse.Namespace(**vars(args))
+        analysis_args.p0_bounded_trial = True
+        analysis_args.no_notify = True
+        _apply_p0_runtime_config(config, analysis_args)
+        selected_candidates = []
+        for candidate in provenance.get("selected_candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            selected_candidates.append(
+                {
+                    key: candidate.get(key)
+                    for key in (
+                        "rank",
+                        "code",
+                        "name",
+                        "score",
+                        "screen_score",
+                        "reason",
+                        "risk_level",
+                        "risk_flags",
+                        "industry",
+                    )
+                }
+            )
+        analysis_args.auto_screen_acceptance_context = {
+            "schema_version": "auto-screen-acceptance-receipt-v1",
+            "github": {
+                "run_id": str(os.getenv("GITHUB_RUN_ID", "") or ""),
+                "run_number": str(os.getenv("GITHUB_RUN_NUMBER", "") or ""),
+                "run_attempt": str(os.getenv("GITHUB_RUN_ATTEMPT", "") or ""),
+                "head_sha": str(os.getenv("GITHUB_SHA", "") or ""),
+                "ref_name": str(os.getenv("GITHUB_REF_NAME", "") or ""),
+            },
+            "screening": {
+                "strategy": provenance.get("strategy") or strategy,
+                "strategy_version": provenance.get("strategy_version") or "",
+                "screening_run_id": provenance.get("run_id") or "",
+                "market": provenance.get("market") or market,
+                "snapshot_count": provenance.get("snapshot_count"),
+                "snapshot_source": provenance.get("snapshot_source") or "",
+                "after_filter_count": provenance.get("after_filter_count"),
+                "ranking_mode": provenance.get("ranking_mode") or "factor",
+                "selected_count": provenance.get("selected_count"),
+                "selected_candidates": selected_candidates,
+            },
+            "model_id": bounded_model,
+        }
+        logger.info(
+            "AUTO_SCREEN 有界真实验收复用 P0 深析边界: code=%s model=%s",
+            stock_codes[0],
+            bounded_model,
+        )
+
+
+    logger.info(
+        "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s codes=%s",
+        provenance.get("strategy") or strategy,
+        provenance.get("run_id") or "-",
+        ",".join(stock_codes),
+    )
+    succeeded = run_full_analysis(
+        config,
+        analysis_args,
+        stock_codes,
+        raise_errors=raise_errors,
+    )
+    return succeeded, resolution
 
 
 def run_scheduled_analysis(
@@ -1365,9 +1608,77 @@ def main() -> int:
         print(format_notification_diagnostics(result))
         return 0 if result.ok else 1
 
+    p0_bounded_trial = bool(getattr(args, "p0_bounded_trial", False))
+    auto_screen = bool(getattr(args, "auto_screen", False))
+    auto_screen_bounded_live = bool(getattr(args, "auto_screen_bounded_live", False))
+    if auto_screen_bounded_live and not auto_screen:
+        logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires --auto-screen")
+        return 2
+    if auto_screen:
+        if (
+            os.getenv("GITHUB_ACTIONS") != "true"
+            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        ):
+            logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen is workflow_dispatch-only")
+            return 2
+        if (
+            p0_bounded_trial
+            or getattr(args, "stocks", None)
+            or getattr(args, "portfolio", None)
+            or getattr(args, "schedule", False)
+            or getattr(args, "market_review", False)
+            or getattr(args, "dry_run", False)
+            or getattr(args, "single_notify", False)
+        ):
+            logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: incompatible CLI arguments")
+            return 2
+        if auto_screen_bounded_live:
+            if getattr(args, "auto_screen_max_results", 1) != 1:
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires max_results=1")
+                return 2
+            if getattr(args, "no_notify", False):
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires aggregate Email notification")
+                return 2
+            if not str(os.getenv("AUTO_SCREEN_BOUNDED_MODEL", "") or "").strip():
+                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires exact model input")
+                return 2
+        config.screening_enabled = True
+        config.single_stock_notify = False
+        args.no_market_review = True
+        logger.info(
+            "AUTO_SCREEN 手动入口已启用: strategy=momentum_quality max_results=%s",
+            getattr(args, "auto_screen_max_results", 1),
+        )
+    if p0_bounded_trial:
+        if (
+            os.getenv("GITHUB_ACTIONS") != "true"
+            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        ):
+            logger.error("P0_BOUNDARY_VIOLATION: bounded trial is workflow_dispatch-only")
+            return 2
+        if (
+            not args.stocks
+            or getattr(args, "portfolio", None)
+            or getattr(args, "schedule", False)
+            or getattr(args, "market_review", False)
+            or getattr(args, "dry_run", False)
+            or getattr(args, "no_notify", False)
+            or getattr(args, "single_notify", False)
+        ):
+            logger.error("P0_BOUNDARY_VIOLATION: incompatible CLI arguments")
+            return 2
+        try:
+            stock_codes = validate_p0_stock_codes(args.stocks)
+        except P0BoundedTrialError as exc:
+            logger.error("P0_BOUNDARY_VIOLATION: %s", exc)
+            return 2
+        _apply_p0_runtime_config(config, args)
+        logger.info("P0 有界验收使用本次输入: %s", stock_codes)
+    else:
+        stock_codes = None
+
     # 解析股票列表（统一为大写 Issue #355）
-    stock_codes = None
-    if args.stocks:
+    if args.stocks and not p0_bounded_trial:
         stock_codes = [
             resolve_index_stock_code_for_analysis(c)
             for c in split_stock_list(args.stocks)
@@ -1521,8 +1832,22 @@ def main() -> int:
             )
             return 0
 
+        # 模式1.5: 手动 AUTO_SCREEN（workflow_dispatch-only）
+        if auto_screen:
+            logger.info("模式: AUTO_SCREEN → 共享深析链")
+            succeeded, _ = _run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                market="cn",
+                max_results=getattr(args, "auto_screen_max_results", 1),
+                raise_errors=True,
+                bounded_live=auto_screen_bounded_live,
+            )
+            return 0 if succeeded else 1
+
         # 模式2: 定时任务模式
-        if args.schedule or config.schedule_enabled:
+        if (args.schedule or config.schedule_enabled) and not p0_bounded_trial:
             if start_serve:
                 logger.info("模式: Web/API runtime scheduler")
                 logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
@@ -1590,7 +1915,7 @@ def main() -> int:
             return 0
 
         # 模式3: 正常单次运行
-        if config.run_immediately:
+        if p0_bounded_trial or config.run_immediately:
             try:
                 _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
             except FutuPortfolioError as exc:

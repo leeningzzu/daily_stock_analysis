@@ -19,8 +19,72 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data_provider.realtime_types import UnifiedRealtimeQuote, RealtimeSource
+from data_provider.efinance_fetcher import (
+    EfinanceFetcher,
+    _normalize_eastmoney_volume_to_shares,
+)
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
 from src.core.pipeline import StockAnalysisPipeline
+
+
+class TestEfinanceVolumeNormalization(unittest.TestCase):
+    """Eastmoney history/realtime volume must share the system-wide share unit."""
+
+    def test_scalar_normalizer_detects_lots_and_already_normalized_shares(self) -> None:
+        amount = 2_116_622_000
+        price = 1277.96
+
+        self.assertEqual(
+            _normalize_eastmoney_volume_to_shares(
+                16_571,
+                amount=amount,
+                price=price,
+            ),
+            1_657_100,
+        )
+        self.assertEqual(
+            _normalize_eastmoney_volume_to_shares(
+                1_657_100,
+                amount=amount,
+                price=price,
+            ),
+            1_657_100,
+        )
+
+    def test_history_normalization_converts_r002_lot_volume_before_trend_ratio(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "股票代码": ["600519"] * 6,
+                "日期": pd.date_range("2026-09-07", periods=6),
+                "开盘": [1280.0] * 6,
+                "收盘": [1277.96] * 6,
+                "最高": [1285.0] * 6,
+                "最低": [1270.0] * 6,
+                "成交量": [25_000, 26_000, 25_500, 26_500, 25_750, 16_571],
+                "成交额": [
+                    3_194_900_000,
+                    3_322_696_000,
+                    3_258_798_000,
+                    3_386_594_000,
+                    3_290_747_000,
+                    2_116_622_000,
+                ],
+                "涨跌幅": [0.0] * 6,
+            }
+        )
+        normalized = EfinanceFetcher.__new__(EfinanceFetcher)._normalize_data(
+            raw,
+            "600519",
+        )
+
+        self.assertEqual(int(normalized.iloc[-1]["volume"]), 1_657_100)
+
+        result = TrendAnalysisResult(code="600519")
+        StockTrendAnalyzer()._analyze_volume(normalized, result)
+
+        self.assertLess(result.volume_ratio_5d, 1.0)
+        self.assertGreater(result.volume_ratio_5d, 0.5)
+        self.assertLess(result.volume_ratio_5d, 2.0)
 
 
 def _make_realtime_quote(

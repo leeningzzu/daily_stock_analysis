@@ -441,7 +441,7 @@ class StockTrendAnalyzer:
                 result.volume_trend = "缩量上涨，上攻动能不足"
             else:
                 result.volume_status = VolumeStatus.SHRINK_VOLUME_DOWN
-                result.volume_trend = "缩量回调，洗盘特征明显（好）"
+                result.volume_trend = "缩量回调，卖压收缩；是否属于洗盘需后续确认"
         else:
             result.volume_status = VolumeStatus.NORMAL
             result.volume_trend = "量能正常"
@@ -534,10 +534,10 @@ class StockTrendAnalyzer:
             result.macd_signal = "⚠️ DIF下穿零轴，趋势转弱"
         elif result.macd_dif > 0 and result.macd_dea > 0:
             result.macd_status = MACDStatus.BULLISH
-            result.macd_signal = "✓ 多头排列，持续上涨"
+            result.macd_signal = "✓ MACD DIF/DEA 均位于零轴上方，动量偏强"
         elif result.macd_dif < 0 and result.macd_dea < 0:
             result.macd_status = MACDStatus.BEARISH
-            result.macd_signal = "⚠ 空头排列，持续下跌"
+            result.macd_signal = "⚠ MACD DIF/DEA 均位于零轴下方，动量偏弱"
         else:
             result.macd_status = MACDStatus.BULLISH
             result.macd_signal = " MACD 中性区域"
@@ -676,7 +676,7 @@ class StockTrendAnalyzer:
         score += vol_score
 
         if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:
-            reasons.append("✅ 缩量回调，主力洗盘")
+            reasons.append("✅ 缩量回调，卖压收缩；洗盘需后续确认")
         elif result.volume_status == VolumeStatus.HEAVY_VOLUME_DOWN:
             risks.append("⚠️ 放量下跌，注意风险")
 

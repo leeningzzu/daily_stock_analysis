@@ -124,8 +124,10 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
             [threading.current_thread().name, threading.current_thread().name],
         )
         self.assertEqual(pipeline.notifier.max_inflight, 1)
-        self.assertCountEqual(pipeline.notifier.sent_reports, ["single:000001", "single:600519"])
+        self.assertCountEqual(pipeline.notifier.sent_reports, ["brief:000001", "brief:600519"])
         self.assertCountEqual(pipeline.notifier.email_stock_codes, [["000001"], ["600519"]])
+        self.assertEqual(pipeline.notifier.generate_brief_report.call_count, 2)
+        pipeline.notifier.generate_single_stock_report.assert_not_called()
         pipeline._save_local_report.assert_called_once()
         pipeline._send_notifications.assert_called_once()
         _, kwargs = pipeline._send_notifications.call_args

@@ -13,8 +13,10 @@ except ModuleNotFoundError:
     ensure_litellm_stub()
 
 from src.analyzer import (
+    AnalysisResult,
     GeminiAnalyzer,
     _BULLISH_TREND_HINTS,
+    _bind_execution_owned_intelligence,
     _contains_trend_hint,
     _infer_trend_direction,
     _sanitize_trend_analysis_for_prompt,
@@ -22,6 +24,76 @@ from src.analyzer import (
 
 
 class AnalyzerNewsPromptTestCase(unittest.TestCase):
+    def test_execution_owned_search_state_clears_unbound_llm_intelligence(self) -> None:
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=47,
+            trend_prediction="震荡",
+            operation_advice="回避",
+            news_summary="模型自称新闻摘要",
+            market_sentiment="模型自称市场情绪",
+            hot_topics="模型自称热点",
+            dashboard={
+                "intelligence": {
+                    "sentiment_summary": "市场情绪偏谨慎",
+                    "earnings_outlook": "业绩稳定性通常较强",
+                    "risk_alerts": ["模型风险"],
+                    "positive_catalysts": ["历史相对低位"],
+                    "latest_news": "模型自称最新动态",
+                }
+            },
+            search_performed=True,
+        )
+
+        _bind_execution_owned_intelligence(result, None)
+
+        self.assertFalse(result.search_performed)
+        self.assertEqual(result.news_summary, "")
+        self.assertEqual(result.market_sentiment, "")
+        self.assertEqual(result.hot_topics, "")
+        self.assertEqual(result.dashboard["intelligence"], {"risk_alerts": []})
+
+    def test_execution_owned_search_state_preserves_intelligence_with_bound_news(self) -> None:
+        intelligence = {
+            "risk_alerts": ["已绑定新闻风险"],
+            "latest_news": "已绑定新闻内容",
+        }
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=47,
+            trend_prediction="震荡",
+            operation_advice="回避",
+            dashboard={"intelligence": dict(intelligence)},
+            search_performed=False,
+        )
+
+        _bind_execution_owned_intelligence(result, "2026-09-14 已绑定新闻上下文")
+
+        self.assertTrue(result.search_performed)
+        self.assertEqual(result.dashboard["intelligence"], intelligence)
+
+    def test_prompt_without_news_fails_closed_for_intelligence_and_relative_valuation(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        prompt = analyzer._format_prompt(
+            {
+                "code": "600519",
+                "stock_name": "贵州茅台",
+                "date": "2026-09-14",
+                "today": {"close": 1277.96},
+            },
+            "贵州茅台",
+            news_context=None,
+        )
+
+        self.assertIn("无新闻证据硬约束", prompt)
+        self.assertIn("`search_performed` 必须为 false", prompt)
+        self.assertIn("`dashboard.intelligence.risk_alerts` 必须为空数组", prompt)
+        self.assertIn("禁止声称“历史低位/合理区间/相对便宜”", prompt)
+
     def test_contains_trend_hint_treats_non_adjacent_negation_as_negated(self) -> None:
         self.assertFalse(_contains_trend_hint("尚未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))
         self.assertFalse(_contains_trend_hint("未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))

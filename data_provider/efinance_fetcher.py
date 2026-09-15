@@ -120,6 +120,45 @@ logger = logging.getLogger(__name__)
 EASTMONEY_HISTORY_ENDPOINT = "push2his.eastmoney.com/api/qt/stock/kline/get"
 
 
+def _normalize_eastmoney_volume_to_shares(
+    raw_volume: Any,
+    *,
+    amount: Any = None,
+    price: Any = None,
+) -> Optional[int]:
+    """Normalize Eastmoney/efinance A-share and ETF volume to shares.
+
+    Eastmoney quote-history/realtime payloads commonly expose volume in lots
+    ("手", 100 shares), while ``UnifiedRealtimeQuote.volume`` and the DSA daily
+    history contract use shares. When amount/price are available, select
+    between the raw value and raw*100 by comparing both with the implied share
+    turnover. This avoids double-multiplying payloads already expressed in
+    shares. Without a usable cross-check, keep Eastmoney's lot convention and
+    convert raw lots to shares.
+    """
+    volume = safe_float(raw_volume, default=None)
+    if volume is None or volume < 0:
+        return None
+
+    amount_value = safe_float(amount, default=None)
+    price_value = safe_float(price, default=None)
+    if (
+        amount_value is not None
+        and amount_value > 0
+        and price_value is not None
+        and price_value > 0
+    ):
+        expected_shares = amount_value / price_value
+        if expected_shares > 0:
+            raw_delta = abs(volume - expected_shares)
+            converted = volume * 100
+            converted_delta = abs(converted - expected_shares)
+            normalized = volume if raw_delta <= converted_delta else converted
+            return int(round(normalized))
+
+    return int(round(volume * 100))
+
+
 # User-Agent 池，用于随机轮换
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -608,7 +647,20 @@ class EfinanceFetcher(BaseFetcher):
         if 'amount' not in df.columns:
             df['amount'] = 0
 
-        
+        # Normalize Eastmoney A-share/ETF history to the system-wide share unit
+        # before realtime bars are merged into the same daily series.
+        raw_volumes = df['volume'].tolist()
+        amounts = df['amount'].tolist() if 'amount' in df.columns else [None] * len(df)
+        prices = df['close'].tolist() if 'close' in df.columns else [None] * len(df)
+        df['volume'] = [
+            _normalize_eastmoney_volume_to_shares(
+                raw_volume,
+                amount=amount,
+                price=price,
+            ) or 0
+            for raw_volume, amount, price in zip(raw_volumes, amounts, prices)
+        ]
+
         # 如果没有 code 列，手动添加
         if 'code' not in df.columns:
             df['code'] = stock_code
@@ -706,15 +758,23 @@ class EfinanceFetcher(BaseFetcher):
             total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
             circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
             
+            price_value = safe_float(row.get(price_col))
+            amount_value = safe_float(row.get(amt_col))
+            volume_value = _normalize_eastmoney_volume_to_shares(
+                row.get(vol_col),
+                amount=amount_value,
+                price=price_value,
+            )
+
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=str(row.get(name_col, '')),
                 source=RealtimeSource.EFINANCE,
-                price=safe_float(row.get(price_col)),
+                price=price_value,
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
-                amount=safe_float(row.get(amt_col)),
+                volume=volume_value,
+                amount=amount_value,
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
                 high=safe_float(row.get(high_col)),
@@ -807,15 +867,23 @@ class EfinanceFetcher(BaseFetcher):
             low_col = '最低' if '最低' in df.columns else 'low'
             open_col = '开盘' if '开盘' in df.columns else 'open'
 
+            price_value = safe_float(row.get(price_col))
+            amount_value = safe_float(row.get(amt_col))
+            volume_value = _normalize_eastmoney_volume_to_shares(
+                row.get(vol_col),
+                amount=amount_value,
+                price=price_value,
+            )
+
             quote = UnifiedRealtimeQuote(
                 code=target_code,
                 name=str(row.get(name_col, '')),
                 source=RealtimeSource.EFINANCE,
-                price=safe_float(row.get(price_col)),
+                price=price_value,
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
-                amount=safe_float(row.get(amt_col)),
+                volume=volume_value,
+                amount=amount_value,
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
                 high=safe_float(row.get(high_col)),

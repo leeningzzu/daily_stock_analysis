@@ -89,6 +89,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "debug": False,
             "stocks": None,
+            "auto_screen": False,
+            "auto_screen_max_results": 1,
+            "auto_screen_bounded_live": False,
             "portfolio": None,
             "webui": False,
             "webui_only": False,
@@ -425,6 +428,295 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_full_analysis.assert_called_once()
         _, _, stock_codes = run_full_analysis.call_args.args
         self.assertEqual(stock_codes, ["005930.KS"])
+
+    def test_auto_screen_shared_analysis_feeds_codes_into_existing_full_analysis(self) -> None:
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        resolution = {
+            "stock_codes": ["600519", "000001"],
+            "provenance": {
+                "selection_source": "auto_screen",
+                "strategy": "momentum_quality",
+                "run_id": "screen-run-1",
+            },
+        }
+
+        with (
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ) as resolve_targets,
+            patch("main.run_full_analysis", return_value=True) as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                market="cn",
+                max_results=2,
+                selection_seed="seed-1",
+                raise_errors=True,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        resolve_targets.assert_called_once_with(
+            config,
+            strategy="momentum_quality",
+            market="cn",
+            max_results=2,
+            selection_seed="seed-1",
+        )
+        run_full_analysis.assert_called_once_with(
+            config,
+            args,
+            ["600519", "000001"],
+            raise_errors=True,
+        )
+
+    def test_auto_screen_shared_analysis_skips_full_analysis_when_no_candidates(self) -> None:
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        resolution = {
+            "stock_codes": [],
+            "provenance": {
+                "selection_source": "auto_screen",
+                "strategy": "momentum_quality",
+                "run_id": "screen-run-empty",
+            },
+        }
+
+        with (
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.run_full_analysis") as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                max_results=2,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        run_full_analysis.assert_not_called()
+
+    def test_auto_screen_manual_entry_routes_through_shared_analysis(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=2)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"},
+                clear=False,
+            ),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main._setup_bootstrap_logging"),
+            patch("main._setup_runtime_logging"),
+            patch(
+                "main._run_auto_screen_shared_analysis",
+                return_value=(True, {"stock_codes": ["600519"]}),
+            ) as auto_screen_run,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(config.screening_enabled)
+        self.assertFalse(config.single_stock_notify)
+        self.assertTrue(args.no_market_review)
+        auto_screen_run.assert_called_once_with(
+            config,
+            args,
+            strategy="momentum_quality",
+            market="cn",
+            max_results=2,
+            raise_errors=True,
+            bounded_live=False,
+        )
+
+    def test_auto_screen_bounded_live_reuses_p0_deep_analysis_boundary(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=1, auto_screen_bounded_live=True)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+            merge_email_notification=True,
+            report_type="full",
+            report_language="en",
+            report_integrity_retry=3,
+            agent_mode=True,
+            agent_skills=["all"],
+            analysis_delay=10,
+            litellm_model="old/model",
+        )
+        resolution = {
+            "stock_codes": ["600519"],
+            "provenance": {
+                "strategy": "momentum_quality",
+                "strategy_version": "1.1",
+                "run_id": "bounded-live",
+                "market": "cn",
+                "snapshot_count": 5206,
+                "snapshot_source": "em_datacenter",
+                "after_filter_count": 40,
+                "ranking_mode": "factor",
+                "selected_count": 1,
+                "selected_candidates": [
+                    {
+                        "rank": 1,
+                        "code": "600519",
+                        "name": "贵州茅台",
+                        "score": 77.2,
+                        "screen_score": 75.8,
+                        "reason": "趋势与质量得分领先",
+                        "risk_level": "low",
+                        "risk_flags": [],
+                        "industry": "白酒",
+                    }
+                ],
+                "source_errors": ["sina unavailable"],
+                "degradation": [],
+            },
+        }
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_RUN_NUMBER": "20",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "GITHUB_SHA": "abc123",
+                    "GITHUB_REF_NAME": "factor-decision-v1-r002",
+                },
+                clear=False,
+            ),
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.validate_p0_stock_codes", return_value=["600519"]) as validate_codes,
+            patch("main.run_full_analysis", return_value=True) as run_full_analysis,
+        ):
+            succeeded, observed = main._run_auto_screen_shared_analysis(
+                config,
+                args,
+                strategy="momentum_quality",
+                max_results=1,
+                raise_errors=True,
+                bounded_live=True,
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIs(observed, resolution)
+        validate_codes.assert_called_once_with("600519")
+        analysis_args = run_full_analysis.call_args.args[1]
+        self.assertIsNot(analysis_args, args)
+        self.assertFalse(getattr(args, "p0_bounded_trial", False))
+        self.assertTrue(analysis_args.p0_bounded_trial)
+        self.assertTrue(analysis_args.no_notify)
+        receipt_context = analysis_args.auto_screen_acceptance_context
+        self.assertEqual(receipt_context["schema_version"], "auto-screen-acceptance-receipt-v1")
+        self.assertEqual(receipt_context["github"]["run_id"], "12345")
+        self.assertEqual(receipt_context["github"]["head_sha"], "abc123")
+        self.assertEqual(receipt_context["screening"]["screening_run_id"], "bounded-live")
+        self.assertEqual(receipt_context["screening"]["snapshot_source"], "em_datacenter")
+        self.assertEqual(receipt_context["screening"]["selected_candidates"][0]["code"], "600519")
+        self.assertEqual(
+            receipt_context["screening"]["selected_candidates"][0]["reason"],
+            "趋势与质量得分领先",
+        )
+        self.assertEqual(receipt_context["model_id"], "gemini/test-model")
+        self.assertEqual(analysis_args.workers, 1)
+        self.assertTrue(analysis_args.no_market_review)
+        self.assertEqual(config.litellm_model, "gemini/test-model")
+        self.assertFalse(config.single_stock_notify)
+        self.assertFalse(config.merge_email_notification)
+        self.assertEqual(config.report_type, "simple")
+        self.assertEqual(config.report_language, "zh")
+        self.assertEqual(config.report_integrity_retry, 0)
+        self.assertFalse(config.agent_mode)
+        self.assertEqual(config.agent_skills, [])
+        run_full_analysis.assert_called_once_with(
+            config,
+            analysis_args,
+            ["600519"],
+            raise_errors=True,
+        )
+
+    def test_auto_screen_bounded_live_requires_one_candidate_budget_before_screening(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=2, auto_screen_bounded_live=True)
+        config = self._make_config(run_immediately=True)
+
+        with patch("src.services.screening_service.resolve_auto_screen_analysis_targets") as resolve_targets:
+            with self.assertRaisesRegex(main.P0BoundedTrialError, "max_results=1"):
+                main._run_auto_screen_shared_analysis(
+                    config,
+                    args,
+                    strategy="momentum_quality",
+                    max_results=2,
+                    bounded_live=True,
+                )
+        resolve_targets.assert_not_called()
+
+    def test_auto_screen_bounded_live_rejects_non_stock_candidate_before_analysis(self) -> None:
+        args = self._make_args(auto_screen=True, auto_screen_max_results=1, auto_screen_bounded_live=True)
+        config = self._make_config(run_immediately=True)
+        resolution = {"stock_codes": ["510300"], "provenance": {"strategy": "momentum_quality"}}
+
+        with (
+            patch.dict(os.environ, {"AUTO_SCREEN_BOUNDED_MODEL": "gemini/test-model"}, clear=False),
+            patch(
+                "src.services.screening_service.resolve_auto_screen_analysis_targets",
+                return_value=resolution,
+            ),
+            patch("main.validate_p0_stock_codes", side_effect=main.P0BoundedTrialError("reject ETF")),
+            patch("main.run_full_analysis") as run_full_analysis,
+        ):
+            with self.assertRaisesRegex(main.P0BoundedTrialError, "reject ETF"):
+                main._run_auto_screen_shared_analysis(
+                    config,
+                    args,
+                    strategy="momentum_quality",
+                    max_results=1,
+                    bounded_live=True,
+                )
+        run_full_analysis.assert_not_called()
+
+    def test_auto_screen_rejects_non_workflow_dispatch_context(self) -> None:
+        args = self._make_args(auto_screen=True)
+        config = self._make_config(
+            run_immediately=True,
+            screening_enabled=False,
+            single_stock_notify=True,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "false", "GITHUB_EVENT_NAME": ""},
+                clear=False,
+            ),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main._setup_bootstrap_logging"),
+            patch("main._setup_runtime_logging"),
+            patch("main._run_auto_screen_shared_analysis") as auto_screen_run,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 2)
+        auto_screen_run.assert_not_called()
 
     def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
         args = self._make_args(portfolio="futu")
@@ -1853,10 +2145,19 @@ class MainScheduleModeTestCase(unittest.TestCase):
             report_type="simple",
         )
         pipeline = MagicMock()
-        pipeline.run.return_value = []
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline.run.return_value = [stock_result]
         pipeline.notifier = MagicMock(
             is_available=MagicMock(return_value=True),
-            generate_aggregate_report=MagicMock(return_value=""),
+            generate_aggregate_report=MagicMock(return_value="legacy full dashboard"),
+            generate_brief_report=MagicMock(return_value="compact investor brief"),
             send=MagicMock(return_value=True),
         )
         pipeline_kwargs = {}
@@ -1917,6 +2218,58 @@ class MainScheduleModeTestCase(unittest.TestCase):
         notifier_message = pipeline.notifier.send.call_args.args[0]
         self.assertIn("## 完整大盘复盘", notifier_message)
         self.assertNotIn("大盘退潮，高风险，建议观望。", notifier_message)
+        self.assertIn("# 🚀 个股投资者简报", notifier_message)
+        self.assertIn("compact investor brief", notifier_message)
+        self.assertNotIn("legacy full dashboard", notifier_message)
+        pipeline.notifier.generate_brief_report.assert_called_once_with([stock_result])
+        pipeline.notifier.generate_aggregate_report.assert_not_called()
+
+    def test_run_full_analysis_empty_compact_stock_projection_fails_closed(self) -> None:
+        args = self._make_args()
+        target_date = date(2026, 3, 26)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            daily_market_context_enabled=True,
+            single_stock_notify=False,
+            merge_email_notification=True,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+            report_type="simple",
+        )
+        stock_result = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=43,
+            operation_advice="回避",
+            trend_prediction="看空",
+            get_emoji=lambda: "🟡",
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = [stock_result]
+        pipeline.notifier = MagicMock(
+            is_available=MagicMock(return_value=True),
+            generate_brief_report=MagicMock(return_value=""),
+            send=MagicMock(return_value=True),
+        )
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
+             patch("main._resolve_daily_market_context_target_date", return_value=target_date), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch(
+                 "main._prime_daily_market_context",
+                 return_value=(
+                     "大盘退潮，高风险，建议观望。",
+                     "## 完整大盘复盘\n市场结构偏弱，建议保守。",
+                 ),
+             ), \
+             patch("main._run_market_review_with_shared_lock"), \
+             patch("src.core.market_review.run_market_review"):
+            outcome = main.run_full_analysis(config, args, [])
+
+        self.assertFalse(outcome)
+        pipeline.notifier.send.assert_not_called()
 
     def test_run_market_review_with_shared_lock_forwards_request_config(self) -> None:
         config = self._make_config(

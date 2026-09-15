@@ -1733,6 +1733,8 @@ def _call_screening_screen(
     *,
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
+    use_llm: bool = True,
+    post_analyzers: Optional[List[str]] = None,
 ) -> Any:
     # Environment bridging is process-global, so keep it brief: materialize an
     # immutable pipeline config while holding the lock, then release it before
@@ -1742,18 +1744,134 @@ def _call_screening_screen(
         pipeline_context = _build_screening_context(config, max_results=max_results)
 
     daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
+    screen_kwargs: Dict[str, Any] = {
+        "market": market,
+        "max_output": max_results,
+        "use_llm": use_llm,
+        "selection_seed": selection_seed,
+        "context": pipeline_context,
+        "config": pipeline_config,
+        "progress_callback": progress_callback,
+        "daily_history_fetcher": daily_history_fetcher,
+    }
+    if post_analyzers is not None:
+        screen_kwargs["post_analyzers"] = list(post_analyzers)
+
+    if not use_llm:
+        return run_screening_pipeline(strategy, **screen_kwargs)
+
     with _screening_litellm_headers(config):
-        return run_screening_pipeline(
-            strategy,
-            market=market,
-            max_output=max_results,
-            use_llm=True,
-            selection_seed=selection_seed,
-            context=pipeline_context,
-            config=pipeline_config,
-            progress_callback=progress_callback,
-            daily_history_fetcher=daily_history_fetcher,
+        return run_screening_pipeline(strategy, **screen_kwargs)
+
+
+def resolve_auto_screen_analysis_targets(
+    config: Config,
+    *,
+    strategy: str,
+    market: str = "cn",
+    max_results: int = 5,
+    selection_seed: str = "",
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> Dict[str, Any]:
+    """Resolve deterministic AUTO_SCREEN candidates for the existing analysis shell.
+
+    Screening owns only cross-sectional candidate selection here.  Final stock
+    analysis, canonical decisions, reports, and notifications remain owned by
+    ``run_full_analysis`` / ``StockAnalysisPipeline`` after the returned codes
+    cross the shared target boundary.
+    """
+    _ensure_screening_enabled(config)
+    _ensure_screening_available_for_use()
+    _ensure_supported_market(market)
+    _ensure_supported_strategy(strategy)
+    if max_results <= 0:
+        raise ValueError("AUTO_SCREEN max_results must be positive")
+
+    raw = _call_screening_screen(
+        strategy,
+        market,
+        max_results,
+        config,
+        selection_seed=selection_seed,
+        progress_callback=progress_callback,
+        use_llm=False,
+        post_analyzers=["scorecard"],
+    )
+    raw_data = _remove_non_finite_json_values(_to_plain(raw))
+    if not isinstance(raw_data, dict):
+        raw_data = {"candidates": raw_data}
+
+    ranking_mode = _env_text(raw_data.get("ranking_mode") or "factor").lower()
+    post_analyzer_names = [
+        _env_text(name).lower()
+        for name in (raw_data.get("post_analyzers") or ["scorecard"])
+        if _env_text(name)
+    ]
+    if bool(raw_data.get("llm_ranked")) or ranking_mode == "llm":
+        raise RuntimeError("AUTO_SCREEN deterministic boundary violated: LLM ranking executed")
+    if post_analyzer_names != ["scorecard"] or bool(raw_data.get("deep_analysis_requested")):
+        raise RuntimeError(
+            "AUTO_SCREEN deterministic boundary violated: remote or unexpected post-analysis executed"
         )
+
+    normalized_candidates = _normalize_candidates(raw_data)
+    selected: List[Dict[str, Any]] = []
+    stock_codes: List[str] = []
+    seen_codes = set()
+    for candidate in normalized_candidates[:max_results]:
+        code = _env_text(candidate.get("code")).upper()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        stock_codes.append(code)
+        selected.append(
+            {
+                "rank": candidate.get("rank"),
+                "code": code,
+                "name": candidate.get("name") or "",
+                "score": candidate.get("score"),
+                "screen_score": candidate.get("screen_score"),
+                "reason": candidate.get("reason") or "",
+                "risk_level": candidate.get("risk_level") or "",
+                "risk_flags": list(candidate.get("risk_flags") or []),
+                "industry": candidate.get("industry") or "",
+            }
+        )
+
+    engine_status = _call_screening_status()
+    provenance = {
+        "selection_source": "auto_screen",
+        "engine": engine_status.get("engine") or "builtin",
+        "engine_version": engine_status.get("version") or SCREENING_VERSION,
+        "reference_project": engine_status.get("reference_project") or REFERENCE_PROJECT,
+        "reference_revision": engine_status.get("reference_revision") or REFERENCE_REVISION,
+        "strategy": raw_data.get("strategy") or strategy,
+        "strategy_version": raw_data.get("strategy_version") or "",
+        "market": raw_data.get("market") or market,
+        "run_id": raw_data.get("run_id") or "",
+        "snapshot_count": raw_data.get("snapshot_count"),
+        "snapshot_source": raw_data.get("snapshot_source") or "",
+        "after_filter_count": raw_data.get("after_filter_count"),
+        "ranking_mode": ranking_mode,
+        "llm_ranked": False,
+        "post_analyzers": post_analyzer_names,
+        "deep_analysis_requested": False,
+        "candidate_count": len(normalized_candidates),
+        "selected_count": len(stock_codes),
+        "source_errors": _list_text_values(raw_data.get("source_errors")),
+        "degradation": _list_text_values(raw_data.get("degradation")),
+        "selected_candidates": selected,
+        "production_boundary": {
+            "llm_ranking": False,
+            "remote_dsa_post_analyzer": False,
+            "post_rank_news_search_enrichment": False,
+            "final_action_authority": "StockAnalysisPipeline/factor_decision",
+        },
+    }
+    return {
+        "stock_codes": stock_codes,
+        "provenance": provenance,
+    }
 
 
 @contextmanager

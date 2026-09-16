@@ -189,6 +189,7 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertTrue(success)
         self.assertIsNone(error)
         pipeline.fetcher_manager.get_stock_name.assert_called_once_with("600519", allow_realtime=False)
+        pipeline.fetcher_manager.get_daily_data.assert_called_once_with("600519", days=120)
 
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):
         fetcher = PytdxFetcher(hosts=[])

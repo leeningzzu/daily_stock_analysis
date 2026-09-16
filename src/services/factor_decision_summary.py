@@ -20,6 +20,7 @@ _HARD_RISK_HINTS = ("重大利空", "重大风险", "退市", "放量跌破", "�
 _MISSING_EVIDENCE_HINTS = ("数据不足", "无法完成分析", "无法判断")
 _CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
 _MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
+_TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -309,6 +310,59 @@ def _market_sector_regime_summary(evidence: Dict[str, Any]) -> str:
     elif sector.get("state") == "NOT_SUPPORTED":
         parts.append("板块证据当前不支持")
     return "市场/板块：" + "；".join(parts) + "。"
+
+
+def _build_trend_relative_strength_evidence(
+    trend_result: Any,
+    relative_strength_context: Any,
+) -> Dict[str, Any]:
+    """Compose completed daily trend evidence with an optional exact-date RS context."""
+    trend_status = _enum_value(getattr(trend_result, "trend_status", None))
+    alignment = str(getattr(trend_result, "ma_alignment", None) or "").strip()
+    strength = _safe_float(getattr(trend_result, "trend_strength", None))
+    rs = _mapping(relative_strength_context)
+    rs_status = str(rs.get("status") or "").strip().upper()
+
+    if not trend_status:
+        evidence_state = "UNKNOWN"
+    elif rs_status == "READY":
+        evidence_state = "READY"
+    else:
+        evidence_state = "PARTIAL"
+
+    return {
+        "family": "trend_relative_strength",
+        "version": _TREND_RELATIVE_STRENGTH_VERSION,
+        "evidence_state": evidence_state,
+        "absolute_trend": {
+            "status": trend_status or None,
+            "alignment": alignment or None,
+            "strength": strength,
+        },
+        "relative_strength": rs or {
+            "status": "MISSING",
+            "reason": "RELATIVE_STRENGTH_CONTEXT_MISSING",
+        },
+        "hard_veto": False,
+        "veto_codes": [],
+    }
+
+
+def _trend_relative_strength_summary(evidence: Dict[str, Any]) -> str:
+    absolute = _mapping(evidence.get("absolute_trend"))
+    relative = _mapping(evidence.get("relative_strength"))
+    trend_text = str(absolute.get("status") or "趋势不明")
+    if str(relative.get("status") or "").upper() != "READY":
+        return f"趋势/相对强弱：{trend_text}；基准相对强弱证据尚未 READY。"
+    benchmark = _mapping(relative.get("benchmark"))
+    rel = _mapping(relative.get("relative"))
+    ratio = _safe_float(rel.get("relative_ratio_change_pct"))
+    ratio_text = f"{ratio:+.2f}%" if ratio is not None else "未知"
+    return (
+        f"趋势/相对强弱：{trend_text}；相对{benchmark.get('name') or benchmark.get('code') or '基准'}"
+        f"的 {relative.get('horizon_sessions', 60)} 个交易时段比率变化 {ratio_text}，"
+        f"状态 {rel.get('state') or 'UNKNOWN'}。"
+    )
 
 
 def _canonical_decision(
@@ -884,6 +938,7 @@ def build_stock_factor_decision_summary(
     chip_data: Any = None,
     daily_market_context: Any = None,
     market_structure_context: Optional[Dict[str, Any]] = None,
+    relative_strength_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -900,6 +955,10 @@ def build_stock_factor_decision_summary(
     market_sector_regime = _build_market_sector_regime_evidence(
         daily_market_context,
         market_structure_context,
+    )
+    trend_relative_strength = _build_trend_relative_strength_evidence(
+        trend_result,
+        relative_strength_context,
     )
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
@@ -924,6 +983,7 @@ def build_stock_factor_decision_summary(
         "cost_structure": cost_structure,
         "valuation": valuation,
         "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
+        "trend_relative_strength": _trend_relative_strength_summary(trend_relative_strength),
     }
 
     why: List[str] = []
@@ -975,6 +1035,7 @@ def build_stock_factor_decision_summary(
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,
         "market_sector_regime": market_sector_regime,
+        "trend_relative_strength": trend_relative_strength,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

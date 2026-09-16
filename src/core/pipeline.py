@@ -74,6 +74,7 @@ from src.services.analysis_context_builder import (
     PipelineAnalysisArtifacts,
 )
 from src.services.market_structure_service import MarketStructureService
+from src.services.relative_strength_service import RelativeStrengthService
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -300,6 +301,7 @@ class StockAnalysisPipeline:
         )
         self.notifier = NotificationService(source_message=source_message)
         self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
+        self.relative_strength_service = RelativeStrengthService(fetcher_manager=self.fetcher_manager)
         self.market_hotspot_service: Optional[MarketHotspotService] = None
         if not self.p0_bounded_trial:
             try:
@@ -429,7 +431,7 @@ class StockAnalysisPipeline:
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
+            df, source_name = self.fetcher_manager.get_daily_data(code, days=120)
 
             if df is None or df.empty:
                 return False, "获取数据为空"
@@ -604,25 +606,47 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.debug(f"{stock_name}({code}) 基本面快照写入失败: {e}")
 
-            # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
+            # Step 3: 趋势分析（基于交易理念）— completed daily evidence and legacy intraday view are separated.
             trend_result: Optional[TrendAnalysisResult] = None
+            canonical_trend_result: Optional[TrendAnalysisResult] = None
+            completed_daily_history: Optional[pd.DataFrame] = None
             try:
                 from src.services.history_loader import get_frozen_target_date
                 _mkt = get_market_for_stock(normalize_stock_code(code))
                 frozen = get_frozen_target_date()
-                end_date = frozen if frozen else get_market_now(_mkt).date()
-                start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
+                end_date = frozen if frozen else daily_market_target_date
+                start_date = end_date - timedelta(days=200)
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
-                    df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
-                    # Issue #234: Augment with realtime for intraday MA calculation
+                    completed_daily_history = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                    if len(completed_daily_history) >= 60:
+                        canonical_trend_result = self.trend_analyzer.analyze(
+                            completed_daily_history.copy(), code
+                        )
+                    trend_df = completed_daily_history.copy()
+                    # Legacy prompt/display compatibility may still use realtime augmentation
+                    # or short-history MA fallbacks. Canonical factor evidence above uses neither.
                     if self.config.enable_realtime_quote and realtime_quote:
-                        df = self._augment_historical_with_realtime(df, realtime_quote, code)
-                    trend_result = self.trend_analyzer.analyze(df, code)
+                        trend_df = self._augment_historical_with_realtime(trend_df, realtime_quote, code)
+                        trend_result = self.trend_analyzer.analyze(trend_df, code)
+                    else:
+                        trend_result = canonical_trend_result or self.trend_analyzer.analyze(trend_df, code)
                     logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
                               f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
+
+            relative_strength_context = None
+            if canonical_trend_result is not None and not SearchService.is_index_or_etf(code, stock_name):
+                try:
+                    relative_strength_context = self.relative_strength_service.build_context(
+                        stock_code=code,
+                        market=market,
+                        stock_history=completed_daily_history,
+                        target_date=daily_market_target_date,
+                    )
+                except Exception as e:
+                    logger.warning(f"{stock_name}({code}) 相对强弱证据构建失败，按缺失处理: {e}")
 
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
@@ -641,6 +665,8 @@ class StockAnalysisPipeline:
                     daily_market_context=daily_market_context,
                     portfolio_context=portfolio_context,
                     market_structure_context=market_structure_context,
+                    canonical_trend_result=canonical_trend_result,
+                    relative_strength_context=relative_strength_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -886,11 +912,12 @@ class StockAnalysisPipeline:
                 self._attach_factor_decision_summary(
                     result,
                     code=code,
-                    trend_result=trend_result,
+                    trend_result=canonical_trend_result,
                     fundamental_context=fundamental_context,
                     chip_data=chip_data,
                     daily_market_context=daily_market_context,
                     market_structure_context=market_structure_context,
+                    relative_strength_context=relative_strength_context,
                 )
                 self._promote_p0_deterministic_result_after_explanation_failure(
                     result,
@@ -1385,6 +1412,8 @@ class StockAnalysisPipeline:
         daily_market_context: Optional[DailyMarketContext] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
+        canonical_trend_result: Optional[TrendAnalysisResult] = None,
+        relative_strength_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1695,11 +1724,12 @@ class StockAnalysisPipeline:
                 self._attach_factor_decision_summary(
                     result,
                     code=code,
-                    trend_result=trend_result,
+                    trend_result=canonical_trend_result,
                     fundamental_context=fundamental_context,
                     chip_data=chip_data,
                     daily_market_context=daily_market_context,
                     market_structure_context=market_structure_context,
+                    relative_strength_context=relative_strength_context,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2183,6 +2213,7 @@ class StockAnalysisPipeline:
         chip_data: Optional[ChipDistribution],
         daily_market_context: Optional[DailyMarketContext] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
+        relative_strength_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Attach the factor summary and, in P0, finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
@@ -2211,6 +2242,7 @@ class StockAnalysisPipeline:
                 chip_data=chip_data,
                 daily_market_context=daily_market_context,
                 market_structure_context=market_structure_context,
+                relative_strength_context=relative_strength_context,
                 include_canonical=self.p0_bounded_trial,
             )
         except Exception as exc:

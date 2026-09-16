@@ -52,6 +52,8 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 MUE V1 的 `market-sector-regime-v1` 不新增行情源、调度器或第二套决策引擎，而是复用现有 `MarketLightSnapshot` 与 `MarketStructureContext` 形成 factor-decision 内部确定性证据族。`MarketLight` 为 `red` 且 `data_quality=ok` 时可作为市场风险硬否决；`yellow`、partial red 与板块 `cooling` 仅形成谨慎/降级证据；`green` 或板块 `warming/accelerating` 只能确认/许可既有个股 setup，不能独立把 WAIT 升级为 BUY。缺失、partial、unsupported 必须保留相应 evidence state，不得补齐。
 
+MUE V1 的 `trend-relative-strength-v1` 把“绝对趋势”和“相对基准强弱”分开：绝对趋势继续复用 `StockTrendAnalyzer`，但 canonical factor 只消费至少 60 根 completed daily bars，不消费盘中 realtime 拼接的未完成日线或 MA60 的短历史 fallback；相对强弱首版对 A 股使用代码 `510300` 的沪深300ETF作为显式 `etf_proxy`，不得表述为沪深300指数原始历史。股票与 benchmark 的首次日线 warm-up 均取 120 个日历日但不增加请求次数；RS 以 benchmark 的 61 个 completed observations 定义 60-session 起止日期，并要求股票在完全相同的 start/end 日期有收盘价；warm-up、target date 或共享端点不足时保持 MISSING/UNKNOWN。RS 明确是 provider price-return proxy，不冒充 total-return 指数；Production READY 还要求股票起止端点 `data_source` 与 benchmark provider 一致，跨源只能 PARTIAL。正 RS 只能确认，负 RS 首版也不独立形成 hard veto，阈值与权重留给后续 outcome/PIT 校准。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

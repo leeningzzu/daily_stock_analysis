@@ -287,6 +287,57 @@ def test_market_sector_regime_missing_inputs_stay_unknown_without_changing_legac
     assert unqualified_red["canonical_decision"]["action"] == "WAIT"
 
 
+def test_relative_strength_is_first_class_evidence_but_never_independently_upgrades_or_vetoes():
+    positive = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        relative_strength_context={
+            "status": "READY",
+            "horizon_sessions": 60,
+            "benchmark": {"code": "510300", "name": "华泰柏瑞沪深300ETF", "kind": "etf_proxy"},
+            "relative": {"state": "OUTPERFORMING", "relative_ratio_change_pct": 8.5},
+        },
+        include_canonical=True,
+    )
+    evidence = positive["trend_relative_strength"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["relative_strength"]["benchmark"]["kind"] == "etf_proxy"
+    assert evidence["hard_veto"] is False
+    assert positive["canonical_decision"]["action"] == "WAIT"
+
+    negative = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        relative_strength_context={
+            "status": "READY",
+            "horizon_sessions": 60,
+            "benchmark": {"code": "510300", "name": "华泰柏瑞沪深300ETF", "kind": "etf_proxy"},
+            "relative": {"state": "UNDERPERFORMING", "relative_ratio_change_pct": -12.0},
+        },
+        include_canonical=True,
+    )
+    assert negative["trend_relative_strength"]["relative_strength"]["relative"]["state"] == "UNDERPERFORMING"
+    assert negative["trend_relative_strength"]["hard_veto"] is False
+    assert negative["canonical_decision"]["action"] == "WAIT"
+
+
+def test_missing_relative_strength_preserves_legacy_decision_and_weak_completed_trend_still_vetoes():
+    missing = build_stock_factor_decision_summary(_trend(signal_score=82), include_canonical=True)
+    assert missing["trend_relative_strength"]["evidence_state"] == "PARTIAL"
+    assert missing["trend_relative_strength"]["relative_strength"]["status"] == "MISSING"
+    assert missing["canonical_decision"]["reason_codes"] == ["CONDITIONAL_OBSERVATION_ONLY"]
+
+    weak = build_stock_factor_decision_summary(
+        _trend(signal_score=99, trend_status=_enum("空头排列")),
+        relative_strength_context={
+            "status": "READY",
+            "benchmark": {"code": "510300", "kind": "etf_proxy"},
+            "relative": {"state": "OUTPERFORMING", "relative_ratio_change_pct": 5.0},
+        },
+        include_canonical=True,
+    )
+    assert weak["canonical_decision"]["action"] == "PASS"
+    assert "WEAK_TREND" in weak["canonical_decision"]["reason_codes"]
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

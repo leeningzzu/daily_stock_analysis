@@ -62,6 +62,8 @@ MUE V1 的 `price-structure-v1` 复用同一 completed daily history，不引入
 
 MUE V1 的 `volatility-momentum-v1` 继续复用同一 completed daily history、`StockTrendAnalyzer` 的 MACD/RSI 公式和 `price-structure-v1` 的 confirmed Pivot/Swing，不安装第二套 TA 库。波动层记录 20 日年化实现波动率与 20 日 True Range 简单均值/现价比例；后者与筛选层历史 `atr_20_pct` 公式一致，但明确不是 Wilder/TA-Lib ATR。动量层增加 ROC20/ROC60，并把 MACD/RSI 当前状态作为同一结构化证据投影。背离只有在两个已确认同类 Pivot 上、以 Pivot `origin_time` 对齐当时因果可得的 MACD DIF/RSI12，并以第二 Pivot 的 `confirmed_at` 作为最早确认时间后才成立；同一 swing 上的 MACD/RSI 共用一个 correlation group，不能重复计票。首版还记录收益一阶自相关、5 日方差尺度比、绝对收益一阶自相关、偏度/超额峰度与 3σ 尾部事件数作为观察性过程诊断；这些值不执行显著性检验、不输出 A/B/C“世界”硬分类、不自动切换策略，也不独立升级 BUY 或新增 hard veto。ADF/OU 半衰期/GARCH/HMM 与跨周期重复诊断继续延后到相应研究/多周期 owner。
 
+MUE V1 的 `pattern-trigger-v1` 不再实现第二套 Pivot 或 breakout owner，而是只组合 `price-structure-v1` 已确认的 Pivot/Swing 与 completed-close breakout/retest/failed-breakout 事件。首版只支持 `CUP_BASE`（柄部 `NONE/FORMING/COMPLETE`）、采用 O'Neil bullish-continuation 语义的 `DOUBLE_BOTTOM_BASE`，以及 `CONTRACTION_BASE`（`VCP/FLAT_BASE/TIGHT_CONSOLIDATION`）；StockCharts prior-downtrend reversal double-bottom 明确延期，不能与 continuation base 混用。所有百分比、时长、收缩和量能门槛都是带 `algorithm_version/config_hash` 的 V1 候选参数，不是普适市场定律。几何状态为 `FORMING/READY/INVALIDATED`，组合生命周期为 `FORMING/CONFIRMED/FAILED`；其中 `CONFIRMED/FAILED` 必须引用 Price Structure 的同一 trigger pivot 事件，禁止重新计算突破。历史 replay 只接受 target-date completed prefix，要求所有 pivot `confirmed_at <= target_date`、source alignment 可证明、full-series 截断结果与显式 prefix 一致且未来 K 线不能回填旧状态。该证据族不推断机构意图、不新增 hard veto、不独立升级 BUY、不自动切换策略；现有 Agent `analyze_pattern` 与 AlphaSift-derived screening 特征仅作方法/候选特征复用，不直接成为 canonical truth。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

@@ -25,6 +25,7 @@ _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
 _COST_STRUCTURE_VERSION = "cost-structure-v1"
 _PRICE_STRUCTURE_VERSION = "price-structure-v1"
 _VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v1"
+_PATTERN_TRIGGER_VERSION = "pattern-trigger-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -411,6 +412,70 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
         return _momentum_summary(trend_result)
     prefix = "波动/动量：" if evidence.get("evidence_state") == "READY" else "波动/动量：数据覆盖未完全就绪；"
     return prefix + "；".join(parts[:7]) + "。"
+
+
+def _build_pattern_trigger_evidence(context_value: Any) -> Dict[str, Any]:
+    context = _mapping(context_value)
+    status = str(context.get("status") or "").strip().upper()
+    if status in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+        evidence_state = status
+    else:
+        evidence_state = "MISSING"
+        context = {
+            "status": "MISSING",
+            "reason": "PATTERN_TRIGGER_CONTEXT_MISSING",
+            "patterns": [],
+            "primary_pattern": None,
+            "historical_replay_eligible": False,
+        }
+    return {
+        "family": "pattern_trigger",
+        "version": _PATTERN_TRIGGER_VERSION,
+        "evidence_state": evidence_state,
+        "context": context,
+        "observable_only": True,
+        "hard_veto": False,
+        "veto_codes": [],
+        "independent_action_authority": False,
+        "automatic_strategy_switching": False,
+    }
+
+
+def _pattern_trigger_summary(evidence: Dict[str, Any]) -> str:
+    context = _mapping(evidence.get("context"))
+    primary = _mapping(context.get("primary_pattern"))
+    if not primary:
+        if evidence.get("evidence_state") == "READY":
+            return "形态/触发：当前未形成 V1 支持的已确认或形成中基底形态。"
+        return "形态/触发：确定性形态证据不足，暂不据此升级或否决。"
+
+    label = {
+        "CUP_BASE": "杯形基底",
+        "DOUBLE_BOTTOM_BASE": "双底基底",
+        "CONTRACTION_BASE": "收缩基底",
+    }.get(str(primary.get("pattern_type") or ""), "基底形态")
+    subtype = str(primary.get("subtype") or "")
+    subtype_label = {
+        "VCP": "VCP",
+        "FLAT_BASE": "平坦基底",
+        "TIGHT_CONSOLIDATION": "紧密整理",
+    }.get(subtype, subtype)
+    lifecycle = {
+        "FORMING": "形成中",
+        "CONFIRMED": "已由 Price Structure 突破事件确认",
+        "FAILED": "已由 Price Structure 失败突破事件判定失败",
+    }.get(str(primary.get("lifecycle") or ""), "状态未知")
+    parts = [label + (f"/{subtype_label}" if subtype_label else ""), lifecycle]
+    if primary.get("pattern_type") == "CUP_BASE":
+        handle = str(primary.get("handle_status") or "NONE")
+        parts.append({"NONE": "无独立柄部", "FORMING": "柄部形成中", "COMPLETE": "柄部已完成"}.get(handle, f"柄部 {handle}"))
+    volume_ref = _mapping(primary.get("volume_evidence_ref"))
+    volume_confirmation = str(volume_ref.get("confirmation") or "")
+    if volume_confirmation == "CONFIRMED":
+        parts.append("突破量能参考已确认")
+    elif volume_confirmation == "NOT_CONFIRMED":
+        parts.append("突破量能参考尚未确认")
+    return "形态/触发：" + "；".join(parts) + "；仅作确定性观察证据，不拥有独立动作权限。"
 
 
 def _conclusion(trend_result: Any, score: int) -> str:
@@ -1126,6 +1191,9 @@ def _build_asset_research_brief_v1(trend_result, summary):
     momentum = _asset_brief_v1_text(
         sections.get("momentum"), ("\u52a8\u91cf\uff1a", "\u52a8\u91cf:")
     )
+    pattern_trigger = _asset_brief_v1_text(
+        sections.get("pattern_trigger"), ("形态/触发：", "形态/触发:")
+    )
 
     clauses = []
     if price_text and trend:
@@ -1137,7 +1205,7 @@ def _build_asset_research_brief_v1(trend_result, summary):
 
     # First-screen causal thesis prioritizes observable supply/demand and chip-cost
     # evidence before valuation/shape detail; it never infers institutional intent.
-    for candidate in (volume_price, cost, valuation, structure, momentum):
+    for candidate in (volume_price, pattern_trigger, cost, valuation, structure, momentum):
         if _asset_brief_v1_usable(candidate) and candidate not in clauses:
             clauses.append(candidate)
         if len(clauses) >= 4:
@@ -1145,7 +1213,7 @@ def _build_asset_research_brief_v1(trend_result, summary):
 
     daily_components = [
         item
-        for item in (trend, volume_price, structure, momentum)
+        for item in (trend, volume_price, pattern_trigger, structure, momentum)
         if _asset_brief_v1_usable(item)
     ]
     daily_thesis = "\uff1b".join(daily_components[:3]) or None
@@ -1262,6 +1330,7 @@ def build_stock_factor_decision_summary(
     cost_structure_context: Optional[Dict[str, Any]] = None,
     price_structure_context: Optional[Dict[str, Any]] = None,
     volatility_momentum_context: Optional[Dict[str, Any]] = None,
+    pattern_trigger_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -1299,6 +1368,7 @@ def build_stock_factor_decision_summary(
         trend_result,
         volatility_momentum_context,
     )
+    pattern_trigger_evidence = _build_pattern_trigger_evidence(pattern_trigger_context)
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
         if include_canonical
@@ -1322,6 +1392,7 @@ def build_stock_factor_decision_summary(
         "volume_price": _volume_price_summary(trend_result),
         "price_structure": _price_structure_summary(price_structure_evidence, trend_result),
         "momentum": _volatility_momentum_summary(volatility_momentum_evidence, trend_result),
+        "pattern_trigger": _pattern_trigger_summary(pattern_trigger_evidence),
         "cost_structure": cost_structure,
         "valuation": valuation,
         "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
@@ -1383,6 +1454,7 @@ def build_stock_factor_decision_summary(
         "cost_structure_evidence": cost_structure_evidence,
         "price_structure_evidence": price_structure_evidence,
         "volatility_momentum_evidence": volatility_momentum_evidence,
+        "pattern_trigger_evidence": pattern_trigger_evidence,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

@@ -561,6 +561,52 @@ def test_missing_structured_volatility_momentum_context_preserves_legacy_momentu
     assert summary["canonical_decision"]["action"] == "WAIT"
 
 
+def test_pattern_trigger_is_first_class_observational_evidence_and_reaches_investor_brief():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        pattern_trigger_context={
+            "status": "READY",
+            "reason": "PATTERN_TRIGGER_READY",
+            "historical_replay_eligible": True,
+            "patterns": [
+                {
+                    "pattern_type": "DOUBLE_BOTTOM_BASE",
+                    "subtype": None,
+                    "geometry_state": "READY",
+                    "lifecycle": "CONFIRMED",
+                    "origin_time": "2026-01-05",
+                    "geometry_confirmed_at": "2026-02-02",
+                    "confirmed_at": "2026-02-06",
+                    "volume_evidence_ref": {"confirmation": "CONFIRMED", "volume_ratio_20d": 1.4},
+                    "price_structure_trigger_ref": {"status": "READY", "state": "UP_BREAKOUT"},
+                }
+            ],
+            "primary_pattern": {
+                "pattern_type": "DOUBLE_BOTTOM_BASE",
+                "subtype": None,
+                "geometry_state": "READY",
+                "lifecycle": "CONFIRMED",
+                "origin_time": "2026-01-05",
+                "geometry_confirmed_at": "2026-02-02",
+                "confirmed_at": "2026-02-06",
+                "volume_evidence_ref": {"confirmation": "CONFIRMED", "volume_ratio_20d": 1.4},
+                "price_structure_trigger_ref": {"status": "READY", "state": "UP_BREAKOUT"},
+            },
+        },
+        include_canonical=True,
+    )
+    evidence = summary["pattern_trigger_evidence"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["hard_veto"] is False
+    assert evidence["independent_action_authority"] is False
+    assert evidence["automatic_strategy_switching"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert "双底基底" in summary["sections"]["pattern_trigger"]
+    assert "Price Structure" in summary["sections"]["pattern_trigger"]
+    assert "独立动作权限" in summary["sections"]["pattern_trigger"]
+    assert "双底基底" in summary["investor_brief"]["fused_paragraph"]
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

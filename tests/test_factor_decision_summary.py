@@ -222,6 +222,71 @@ def test_p0_missing_required_evidence_fails_closed_to_unknown_wait():
     assert_canonical_consumer_consistency(result)
 
 
+def test_market_regime_red_ready_is_canonical_veto_but_green_never_upgrades_wait():
+    red = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        daily_market_context={"market_light": {"status": "red", "score": 25, "data_quality": "ok"}},
+        include_canonical=True,
+    )
+    evidence = red["market_sector_regime"]
+    assert evidence["market"]["state"] == "RISK_OFF"
+    assert evidence["hard_veto"] is True
+    assert red["canonical_decision"]["action"] == "PASS"
+    assert "MARKET_REGIME_RISK_OFF" in red["canonical_decision"]["reason_codes"]
+
+    green = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        daily_market_context={"market_light": {"status": "green", "score": 82, "data_quality": "ok"}},
+        include_canonical=True,
+    )
+    assert green["market_sector_regime"]["market"]["state"] == "PERMISSIVE"
+    assert green["market_sector_regime"]["hard_veto"] is False
+    assert green["canonical_decision"]["action"] == "WAIT"
+
+
+def test_partial_red_and_sector_cooling_are_caution_not_hard_veto():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=88),
+        daily_market_context={"market_light": {"status": "red", "score": 30, "data_quality": "partial"}},
+        market_structure_context={
+            "status": "partial",
+            "stock_market_position": {
+                "status": "partial",
+                "primary_theme": {"name": "机器人概念", "phase": "cooling"},
+                "theme_phase": "cooling",
+                "stock_role": "edge",
+                "risk_tags": [{"code": "theme_data_partial"}],
+            },
+        },
+        include_canonical=True,
+    )
+    evidence = summary["market_sector_regime"]
+    assert evidence["evidence_state"] == "PARTIAL"
+    assert evidence["market"]["state"] == "CAUTION"
+    assert evidence["sector"]["state"] == "COOLING"
+    assert evidence["hard_veto"] is False
+    assert "SECTOR_THEME_COOLING" in evidence["reason_codes"]
+    assert summary["canonical_decision"]["action"] == "WAIT"
+
+
+def test_market_sector_regime_missing_inputs_stay_unknown_without_changing_legacy_decision():
+    summary = build_stock_factor_decision_summary(_trend(signal_score=82), include_canonical=True)
+    evidence = summary["market_sector_regime"]
+    assert evidence["evidence_state"] == "UNKNOWN"
+    assert evidence["hard_veto"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert summary["canonical_decision"]["reason_codes"] == ["CONDITIONAL_OBSERVATION_ONLY"]
+
+    unqualified_red = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        daily_market_context={"market_light": {"status": "red", "score": 25}},
+        include_canonical=True,
+    )
+    assert unqualified_red["market_sector_regime"]["market"]["state"] == "UNKNOWN"
+    assert unqualified_red["market_sector_regime"]["hard_veto"] is False
+    assert unqualified_red["canonical_decision"]["action"] == "WAIT"
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

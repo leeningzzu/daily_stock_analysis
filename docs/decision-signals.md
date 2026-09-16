@@ -50,6 +50,8 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 如果 `score >= 60` 但最终 `action` 是 `hold/watch`，或 `score < 40` 但最终 `action` 仍是 `hold/watch`，必须有明确 guardrail 解释，例如 `dashboard.decision_stability.reason`、`dashboard.decision_score_calibration.guardrail_reason` 或 `metadata.guardrail_reason`。风控降级会保留 `raw_score`、`adjusted_score`、`raw_action`、`final_action` 和原因；没有明确原因的中性动作在 DecisionSignal 提取时会按 canonical score 对齐为 `buy/reduce/sell`。
 
+MUE V1 的 `market-sector-regime-v1` 不新增行情源、调度器或第二套决策引擎，而是复用现有 `MarketLightSnapshot` 与 `MarketStructureContext` 形成 factor-decision 内部确定性证据族。`MarketLight` 为 `red` 且 `data_quality=ok` 时可作为市场风险硬否决；`yellow`、partial red 与板块 `cooling` 仅形成谨慎/降级证据；`green` 或板块 `warming/accelerating` 只能确认/许可既有个股 setup，不能独立把 WAIT 升级为 BUY。缺失、partial、unsupported 必须保留相应 evidence state，不得补齐。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

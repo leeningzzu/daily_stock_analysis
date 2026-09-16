@@ -889,6 +889,8 @@ class StockAnalysisPipeline:
                     trend_result=trend_result,
                     fundamental_context=fundamental_context,
                     chip_data=chip_data,
+                    daily_market_context=daily_market_context,
+                    market_structure_context=market_structure_context,
                 )
                 self._promote_p0_deterministic_result_after_explanation_failure(
                     result,
@@ -1696,6 +1698,8 @@ class StockAnalysisPipeline:
                     trend_result=trend_result,
                     fundamental_context=fundamental_context,
                     chip_data=chip_data,
+                    daily_market_context=daily_market_context,
+                    market_structure_context=market_structure_context,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2177,6 +2181,8 @@ class StockAnalysisPipeline:
         trend_result: Optional[TrendAnalysisResult],
         fundamental_context: Optional[Dict[str, Any]],
         chip_data: Optional[ChipDistribution],
+        daily_market_context: Optional[DailyMarketContext] = None,
+        market_structure_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Attach the factor summary and, in P0, finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
@@ -2203,6 +2209,8 @@ class StockAnalysisPipeline:
                 trend_result,
                 fundamental_context=fundamental_context,
                 chip_data=chip_data,
+                daily_market_context=daily_market_context,
+                market_structure_context=market_structure_context,
                 include_canonical=self.p0_bounded_trial,
             )
         except Exception as exc:

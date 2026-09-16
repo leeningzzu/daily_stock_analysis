@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] AUTO_SCREEN bounded-live 复用既有 `selected_candidates` 与 canonical decision 生成脱敏 machine-readable acceptance receipt，并投影到 GitHub Step Summary，避免后续验收默认依赖人工搬运 Artifact；同时将 MACD 零轴上下状态改为明确的 MACD 动量文案，避免与 MA“多头/空头排列”混淆，并明确 `retry/fallback=0` 仅指模型效果边界、行情数据源仍可执行确定性重试/降级。
 - [改进] AnalysisContextPack 的 `daily_bars` 复用现有 market-phase completed-session 语义与 stored daily bar 内容生成 deterministic evidence identity：仅 exact bar date 与权威 `effective_daily_bar_date` 一致且交易日历可证明时标记 READY；旧 bar / 新于 completed date / 缺源 / 无法证明分别显式降级为 stale / partial / missing / unknown，并用稳定 SHA-256 绑定实际使用的日线内容，不新增数据库或数据源。
 - [修复] Daily Evidence Identity 与既有 `daily_bars` / DataQuality 可用性语义解耦：identity 继续对缺 source/phase/date 保持 MISSING/UNKNOWN fail-closed，但缺少新增证明元数据不再追溯性把 legacy consumer 降为 missing；只有已证明 STALE/PARTIAL 才覆盖旧 block status，避免辅助 identity 引入 Prompt confidence cap 回归。
+- [改进] MUE V1 首版 Market/Sector Regime 复用既有 MarketLight 与 MarketStructure 结构化证据，不新增 provider/DB/scheduler：完整 red MarketLight 可对个股 canonical decision 施加风险否决；yellow、partial red 或 cooling 板块只降级/提示，green/加速板块只作许可或确认，不能独立升级 BUY；缺失与不支持保持显式 UNKNOWN/PARTIAL。
 - [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制

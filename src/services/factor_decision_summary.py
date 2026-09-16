@@ -19,6 +19,7 @@ _NEGATIVE_SIGNALS = {"卖出", "强烈卖出"}
 _HARD_RISK_HINTS = ("重大利空", "重大风险", "退市", "放量跌破", "跌破关键支撑")
 _MISSING_EVIDENCE_HINTS = ("数据不足", "无法完成分析", "无法判断")
 _CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
+_MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -199,7 +200,121 @@ def _risk_notes(trend_result: Any) -> List[str]:
     return risks or ["需继续关注市场环境、行业变化及关键支撑失效风险。"]
 
 
-def _canonical_decision(trend_result: Any) -> Dict[str, Any]:
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _market_light_mapping(daily_market_context: Any) -> Dict[str, Any]:
+    if isinstance(daily_market_context, dict):
+        return _mapping(daily_market_context.get("market_light"))
+    return _mapping(getattr(daily_market_context, "market_light", None))
+
+
+def _build_market_sector_regime_evidence(
+    daily_market_context: Any,
+    market_structure_context: Any,
+) -> Dict[str, Any]:
+    """Compose existing deterministic market/sector artifacts without refetching."""
+    market_light = _market_light_mapping(daily_market_context)
+    market_status = str(market_light.get("status") or "").strip().lower()
+    market_quality = str(market_light.get("data_quality") or "").strip().lower()
+    reason_codes: List[str] = []
+
+    if market_status not in {"red", "yellow", "green"}:
+        market_state = "UNKNOWN"
+        market_evidence_state = "UNKNOWN"
+    elif market_quality == "partial":
+        market_state = "CAUTION" if market_status in {"red", "yellow"} else "PERMISSIVE"
+        market_evidence_state = "PARTIAL"
+        reason_codes.append(f"MARKET_REGIME_{market_status.upper()}_PARTIAL")
+    elif market_quality == "ok":
+        market_state = {"red": "RISK_OFF", "yellow": "CAUTION", "green": "PERMISSIVE"}[market_status]
+        market_evidence_state = "READY"
+        reason_codes.append(f"MARKET_REGIME_{market_status.upper()}")
+    else:
+        market_state = "UNKNOWN"
+        market_evidence_state = "UNKNOWN"
+
+    structure = _mapping(market_structure_context)
+    structure_status = str(structure.get("status") or "").strip().lower()
+    stock_position = _mapping(structure.get("stock_market_position"))
+    primary_theme = _mapping(stock_position.get("primary_theme"))
+    theme_phase = str(stock_position.get("theme_phase") or primary_theme.get("phase") or "").strip().lower()
+    stock_role = str(stock_position.get("stock_role") or "").strip().lower()
+    risk_tags = [
+        str(_mapping(item).get("code"))
+        for item in (stock_position.get("risk_tags") or [])
+        if _mapping(item).get("code")
+    ]
+
+    if structure_status == "not_supported":
+        sector_state = "NOT_SUPPORTED"
+        sector_evidence_state = "NOT_SUPPORTED"
+    elif theme_phase == "cooling":
+        sector_state = "COOLING"
+        sector_evidence_state = "READY" if structure_status == "ok" else "PARTIAL"
+        reason_codes.append("SECTOR_THEME_COOLING")
+    elif theme_phase in {"warming", "accelerating"}:
+        sector_state = "SUPPORTIVE"
+        sector_evidence_state = "READY" if structure_status == "ok" else "PARTIAL"
+        reason_codes.append(f"SECTOR_THEME_{theme_phase.upper()}")
+    elif structure_status in {"ok", "partial"}:
+        sector_state = "UNKNOWN"
+        sector_evidence_state = "PARTIAL"
+    else:
+        sector_state = "UNKNOWN"
+        sector_evidence_state = "UNKNOWN"
+
+    component_states = {market_evidence_state, sector_evidence_state}
+    if "READY" in component_states and component_states <= {"READY", "NOT_SUPPORTED"}:
+        evidence_state = "READY"
+    elif component_states & {"READY", "PARTIAL"}:
+        evidence_state = "PARTIAL"
+    else:
+        evidence_state = "UNKNOWN"
+
+    hard_veto = market_state == "RISK_OFF" and market_evidence_state == "READY"
+    return {
+        "family": "market_sector_regime",
+        "version": _MARKET_SECTOR_REGIME_VERSION,
+        "evidence_state": evidence_state,
+        "hard_veto": hard_veto,
+        "veto_codes": ["MARKET_REGIME_RISK_OFF"] if hard_veto else [],
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "market": {
+            "state": market_state,
+            "status": market_status or None,
+            "score": _safe_float(market_light.get("score")),
+            "data_quality": market_quality or None,
+        },
+        "sector": {
+            "state": sector_state,
+            "status": structure_status or None,
+            "primary_theme": primary_theme.get("name"),
+            "theme_phase": theme_phase or None,
+            "stock_role": stock_role or None,
+            "risk_tags": risk_tags,
+        },
+    }
+
+
+def _market_sector_regime_summary(evidence: Dict[str, Any]) -> str:
+    market = _mapping(evidence.get("market"))
+    sector = _mapping(evidence.get("sector"))
+    if evidence.get("evidence_state") == "UNKNOWN":
+        return "市场/板块：确定性证据不足，暂不据此升级或否决。"
+    parts = [f"市场状态 {market.get('state', 'UNKNOWN')}"]
+    if sector.get("primary_theme"):
+        parts.append(f"主关联板块 {sector['primary_theme']}（{sector.get('theme_phase') or 'unknown'}）")
+    elif sector.get("state") == "NOT_SUPPORTED":
+        parts.append("板块证据当前不支持")
+    return "市场/板块：" + "；".join(parts) + "。"
+
+
+def _canonical_decision(
+    trend_result: Any,
+    market_sector_regime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Produce the conservative P0 WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
     if trend_result is None:
@@ -256,6 +371,13 @@ def _canonical_decision(trend_result: Any) -> Dict[str, Any]:
         for text in risk_factors
     ):
         hard_veto_codes.append("DETERMINISTIC_HARD_RISK")
+
+    if isinstance(market_sector_regime, dict) and market_sector_regime.get("hard_veto"):
+        hard_veto_codes.extend(
+            str(code)
+            for code in (market_sector_regime.get("veto_codes") or [])
+            if str(code).strip()
+        )
 
     if hard_veto_codes:
         return {
@@ -760,6 +882,8 @@ def build_stock_factor_decision_summary(
     *,
     fundamental_context: Optional[Dict[str, Any]] = None,
     chip_data: Any = None,
+    daily_market_context: Any = None,
+    market_structure_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -773,7 +897,15 @@ def build_stock_factor_decision_summary(
     if trend_result is None and not include_canonical:
         raise ValueError("trend_result is required")
 
-    canonical_decision = _canonical_decision(trend_result) if include_canonical else None
+    market_sector_regime = _build_market_sector_regime_evidence(
+        daily_market_context,
+        market_structure_context,
+    )
+    canonical_decision = (
+        _canonical_decision(trend_result, market_sector_regime)
+        if include_canonical
+        else None
+    )
     raw_score = _safe_float(getattr(trend_result, "signal_score", None))
     score = (
         int(max(0, min(100, round(raw_score))))
@@ -791,6 +923,7 @@ def build_stock_factor_decision_summary(
         "momentum": _momentum_summary(trend_result),
         "cost_structure": cost_structure,
         "valuation": valuation,
+        "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
     }
 
     why: List[str] = []
@@ -841,6 +974,7 @@ def build_stock_factor_decision_summary(
         "cost_structure": cost_structure,
         "risk_notes": _risk_notes(trend_result),
         "sections": sections,
+        "market_sector_regime": market_sector_regime,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

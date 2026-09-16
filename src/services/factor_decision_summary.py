@@ -22,6 +22,7 @@ _CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
 _MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
 _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
+_COST_STRUCTURE_VERSION = "cost-structure-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -120,6 +121,87 @@ def _cost_structure_summary(chip_data: Any) -> str:
     if not parts:
         return "成本/筹码：数据不足。"
     return "成本/筹码：" + "；".join(parts) + "。"
+
+
+def _build_cost_structure_evidence(chip_data: Any, cost_structure_context: Any) -> Dict[str, Any]:
+    context = _mapping(cost_structure_context)
+    status = str(context.get("status") or "").strip().upper()
+    if status == "READY":
+        evidence_state = "READY"
+    elif status == "PARTIAL":
+        evidence_state = "PARTIAL"
+    elif status == "MISSING":
+        evidence_state = "MISSING"
+    elif status == "UNKNOWN":
+        evidence_state = "UNKNOWN"
+    elif chip_data is not None:
+        evidence_state = "PARTIAL"
+        context = {
+            "status": "PARTIAL",
+            "reason": "STRUCTURED_COST_CONTEXT_MISSING",
+            "provider_chip_snapshot": {
+                "status": "LEGACY_CURRENT_ONLY",
+                "provider_reference_avg_cost": _safe_float(getattr(chip_data, "avg_cost", None)),
+                "provider_profit_ratio": _safe_float(getattr(chip_data, "profit_ratio", None)),
+                "provider_concentration_90": _safe_float(getattr(chip_data, "concentration_90", None)),
+                "historical_pit_authority": "CURRENT_ONLY",
+                "semantics": "PROVIDER_ESTIMATED_CHIP_DISTRIBUTION",
+                "institutional_intent_claim": "NOT_INFERRED",
+            },
+            "bar_reference_cost": {"status": "MISSING"},
+            "composition": {"provider_vs_bar_relation": "SINGLE_SOURCE_ONLY"},
+        }
+    else:
+        evidence_state = "MISSING"
+        context = {
+            "status": "MISSING",
+            "reason": "COST_STRUCTURE_CONTEXT_MISSING",
+            "provider_chip_snapshot": {"status": "MISSING"},
+            "bar_reference_cost": {"status": "MISSING"},
+            "composition": {"provider_vs_bar_relation": "NOT_COMPARABLE"},
+        }
+
+    return {
+        "family": "cost_structure",
+        "version": _COST_STRUCTURE_VERSION,
+        "evidence_state": evidence_state,
+        "context": context,
+        "observable_only": True,
+        "institutional_intent_inferred": False,
+        "hard_veto": False,
+        "veto_codes": [],
+        "independent_action_authority": False,
+    }
+
+
+def _cost_structure_evidence_summary(evidence: Dict[str, Any], chip_data: Any) -> str:
+    context = _mapping(evidence.get("context"))
+    provider = _mapping(context.get("provider_chip_snapshot"))
+    bar = _mapping(context.get("bar_reference_cost"))
+    composition = _mapping(context.get("composition"))
+    parts: List[str] = []
+
+    provider_status = str(provider.get("status") or "").upper()
+    provider_avg = _safe_float(provider.get("provider_reference_avg_cost"))
+    provider_profit = _safe_float(provider.get("provider_profit_ratio"))
+    if provider_status in {"READY_CURRENT_ONLY", "LEGACY_CURRENT_ONLY", "PARTIAL"} and provider_avg is not None and provider_avg > 0:
+        parts.append(f"供应商估算筹码成本参考约 {_format_price(provider_avg)}（仅当前/近期快照）")
+        if provider_profit is not None and 0 <= provider_profit <= 1:
+            parts.append(f"供应商获利筹码参考约 {provider_profit * 100:.0f}%")
+
+    for label, key in (("20日", "window_20"), ("60日", "window_60")):
+        window = _mapping(bar.get(key))
+        value = _safe_float(window.get("rolling_reference_price"))
+        if str(window.get("status") or "").upper() in {"READY", "PARTIAL"} and value is not None and value > 0:
+            parts.append(f"{label}历史量价参考 {_format_price(value)}")
+
+    relation = str(composition.get("provider_vs_bar_relation") or "").upper()
+    if relation in {"CONVERGENT", "DIVERGENT"}:
+        parts.append(f"两类参考关系 {relation}")
+
+    if not parts:
+        return _cost_structure_summary(chip_data)
+    return "成本/筹码：" + "；".join(parts) + "；历史量价参考不代表真实持仓成本，也不推断机构意图。"
 
 
 def _volume_price_summary(trend_result: Any) -> str:
@@ -1008,6 +1090,7 @@ def build_stock_factor_decision_summary(
     market_structure_context: Optional[Dict[str, Any]] = None,
     relative_strength_context: Optional[Dict[str, Any]] = None,
     supply_demand_context: Optional[Dict[str, Any]] = None,
+    cost_structure_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -1033,6 +1116,10 @@ def build_stock_factor_decision_summary(
         trend_result,
         supply_demand_context,
     )
+    cost_structure_evidence = _build_cost_structure_evidence(
+        chip_data,
+        cost_structure_context,
+    )
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
         if include_canonical
@@ -1047,7 +1134,7 @@ def build_stock_factor_decision_summary(
     support, _ = _nearest_levels(trend_result)
 
     valuation = _valuation_summary(fundamental_context)
-    cost_structure = _cost_structure_summary(chip_data)
+    cost_structure = _cost_structure_evidence_summary(cost_structure_evidence, chip_data)
     sections = {
         "trend": _trend_summary(trend_result),
         "volume_price": _volume_price_summary(trend_result),
@@ -1111,6 +1198,7 @@ def build_stock_factor_decision_summary(
         "market_sector_regime": market_sector_regime,
         "trend_relative_strength": trend_relative_strength,
         "supply_demand_volume_price": supply_demand_volume_price,
+        "cost_structure_evidence": cost_structure_evidence,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

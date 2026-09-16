@@ -56,6 +56,8 @@ MUE V1 的 `trend-relative-strength-v1` 把“绝对趋势”和“相对基准�
 
 MUE V1 的 `supply-demand-volume-price-v1` 只使用 completed OHLCV，不把实时换手率或供应商“主力净流入”标签当成历史确定性真值。首版要求至少 21 根 completed bars，复用既有 5 日量比/量能状态，并补充 20 日相对量、最近 5 日对前 5 日量能变化、上涨/下跌方向成交量平衡与 CMF20；同一底层量能原语按 `relative_volume`、`directional_volume`、`close_location_flow` correlation group 管理，不能重复计票。数据窗口 `data_source` 只有一个明确来源时才能 READY，缺源或混源只到 PARTIAL。该证据族仅描述可观察的需求增强、供应压力、量能收缩或冲突，不宣称“主力吸筹/出货”；也不新增 hard veto，既有 `HEAVY_VOLUME_DOWN` 否决仍由 legacy completed-bar `volume_status` 唯一拥有。
 
+MUE V1 的 `cost-structure-v1` 将成本结构拆成两个不可互相冒充的证据层：现有 `ChipDistribution` 继续作为供应商估算的 current/recent snapshot，只有来源和日期与本轮 target date 可证明时才标 `READY_CURRENT_ONLY`，并明确不能进入历史 PIT replay；历史可重放层只复用 completed daily bars，以 20/60 个交易时段的 `Σ(HLC3×volume)/Σ(volume)` 形成 `BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST`。该量价参考不是传统日内 VWAP、真实 Volume Profile 或实际持仓取得成本；source/warm-up/target-date/正成交量不足时 fail-closed。两层仅用 provider 自身 70%/90% 成本区形成 `CONVERGENT/DIVERGENT/SINGLE_SOURCE_ONLY/NOT_COMPARABLE`，不发明固定百分比阈值，不推断机构意图，也不独立升级 BUY 或增加 hard veto。AVWAP、POC/VAH/VAL、历史 provider-chip replay 与 intraday profile 留待对应 Pivot/Swing、event-known-at 和分钟/逐笔数据 owner 成熟后再进入。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

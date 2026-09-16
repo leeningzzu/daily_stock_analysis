@@ -390,6 +390,66 @@ def test_supply_demand_partial_or_supply_pressure_does_not_duplicate_existing_vo
     assert legacy_veto["canonical_decision"]["reason_codes"].count("HEAVY_VOLUME_DOWN") == 1
 
 
+def test_cost_structure_is_first_class_but_never_independent_action_authority():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        chip_data=SimpleNamespace(avg_cost=10.0, concentration_90=0.18, profit_ratio=0.64),
+        cost_structure_context={
+            "status": "READY",
+            "provider_chip_snapshot": {
+                "status": "READY_CURRENT_ONLY",
+                "provider_reference_avg_cost": 10.0,
+                "provider_profit_ratio": 0.64,
+                "historical_pit_authority": "CURRENT_ONLY",
+            },
+            "bar_reference_cost": {
+                "status": "READY",
+                "window_20": {"status": "READY", "rolling_reference_price": 10.2},
+                "window_60": {"status": "READY", "rolling_reference_price": 9.8},
+            },
+            "composition": {"provider_vs_bar_relation": "CONVERGENT"},
+        },
+        include_canonical=True,
+    )
+    evidence = summary["cost_structure_evidence"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["hard_veto"] is False
+    assert evidence["independent_action_authority"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert "20日历史量价参考" in summary["sections"]["cost_structure"]
+    assert "不代表真实持仓成本" in summary["sections"]["cost_structure"]
+    assert "主力" not in str(evidence)
+    assert "吸筹" not in str(evidence)
+    assert "出货" not in str(evidence)
+
+
+def test_provider_only_or_divergent_cost_structure_does_not_veto_or_upgrade():
+    provider_only = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        chip_data=SimpleNamespace(avg_cost=10.0, concentration_90=0.18, profit_ratio=0.64),
+        include_canonical=True,
+    )
+    assert provider_only["cost_structure_evidence"]["evidence_state"] == "PARTIAL"
+    assert provider_only["canonical_decision"]["action"] == "WAIT"
+
+    divergent = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        cost_structure_context={
+            "status": "READY",
+            "provider_chip_snapshot": {"status": "READY_CURRENT_ONLY", "provider_reference_avg_cost": 8.0},
+            "bar_reference_cost": {
+                "status": "READY",
+                "window_20": {"status": "READY", "rolling_reference_price": 12.0},
+                "window_60": {"status": "READY", "rolling_reference_price": 11.5},
+            },
+            "composition": {"provider_vs_bar_relation": "DIVERGENT"},
+        },
+        include_canonical=True,
+    )
+    assert divergent["cost_structure_evidence"]["hard_veto"] is False
+    assert divergent["canonical_decision"]["action"] == "WAIT"
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

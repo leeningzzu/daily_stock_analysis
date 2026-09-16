@@ -182,6 +182,9 @@ def _cost_structure_evidence_summary(evidence: Dict[str, Any], chip_data: Any) -
     parts: List[str] = []
 
     provider_status = str(provider.get("status") or "").upper()
+    if provider_status == "LEGACY_CURRENT_ONLY":
+        return _cost_structure_summary(chip_data)
+
     provider_avg = _safe_float(provider.get("provider_reference_avg_cost"))
     provider_profit = _safe_float(provider.get("provider_profit_ratio"))
     if provider_status in {"READY_CURRENT_ONLY", "LEGACY_CURRENT_ONLY", "PARTIAL"} and provider_avg is not None and provider_avg > 0:

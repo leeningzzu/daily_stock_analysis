@@ -276,14 +276,22 @@ def test_pipeline_final_factor_builder_handoff_guard_detects_missing_vm_keyword(
     source = (Path(__file__).resolve().parents[1] / "src" / "core" / "pipeline.py").read_text(encoding="utf-8")
     assert _final_factor_builder_forwards_vm_context(source)
 
-    exact_final_hop = (
-        "                volatility_momentum_context=volatility_momentum_context,\n"
-        "                include_canonical=self.p0_bounded_trial,"
+    tree = ast.parse(source)
+    attach = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_attach_factor_decision_summary"
     )
-    assert exact_final_hop in source
-    broken = source.replace(
-        exact_final_hop,
-        "                include_canonical=self.p0_bounded_trial,",
-        1,
-    )
+    calls = [
+        node
+        for node in ast.walk(attach)
+        if isinstance(node, ast.Call)
+        and _call_named(node, "build_stock_factor_decision_summary")
+    ]
+    assert len(calls) == 1
+    calls[0].keywords = [
+        kw for kw in calls[0].keywords if kw.arg != "volatility_momentum_context"
+    ]
+    broken = ast.unparse(tree)
     assert not _final_factor_builder_forwards_vm_context(broken)

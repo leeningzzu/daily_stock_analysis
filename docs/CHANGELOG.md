@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] MUE V1 首版 Supply-Demand/Volume-Price 复用现有 completed 日线与量能原语，增加 20 日相对量、方向成交量平衡和 CMF20 的纯确定性 evidence context；至少 21 根 completed bars 且窗口数据源一致才 READY，缺失/混源降级，不使用实时换手率或供应商资金流作为核心真值，不推断“主力吸筹/出货”，也不新增第二个量价 hard veto。
 - [改进] MUE V1 首版 Cost Structure 复用现有 ChipDistribution 与 completed 日线：provider 筹码只作为带来源/日期边界的 current-only 估算快照，历史层以 20/60 日 HLC3×成交量 rolling reference price 提供 PIT-safe 成本参考；缺失/混源/非正成交量 fail-closed，明确不冒充真实持仓成本、传统日内 VWAP 或 Volume Profile，不新增 BUY/hard-veto authority，并继续延后 AVWAP/POC/VAH/VAL 与历史 provider-chip replay。
 - [改进] MUE V1 首版 Price Structure 复用 completed 日线与既有支撑/压力能力，新增可回放的 confirmed Pivot/Swing primitive：分离 origin_time 与 confirmed_at，目标日期裁剪阻止未来确认回填，并基于已确认层级形成支撑/压力、突破、回踩与失败突破状态；缺失/混源/warm-up/非法 OHLC fail-closed，不新增 BUY/hard-veto authority，杯柄/VCP/双底继续留给后续 Pattern/Trigger。
+- [改进] MUE V1 首版 Volatility/Momentum 复用 completed 日线、既有 MACD/RSI 与 confirmed Pivot/Swing，结构化输出 20 日实现波动率、True Range 简单均值比例、ROC20/ROC60 与同一 swing 上归一的 confirmed MACD/RSI 背离；同时增加收益自相关、5 日方差尺度比、绝对收益自相关、偏度/超额峰度等观察性过程诊断，但不执行“市场世界”硬分类、自动策略切换、独立 BUY/hard-veto，也不把现有 TR-SMA 指标冒充 Wilder ATR，ADF/OU/GARCH/HMM 继续延后。
 - [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制

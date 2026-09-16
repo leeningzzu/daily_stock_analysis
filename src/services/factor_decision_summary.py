@@ -24,6 +24,7 @@ _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
 _COST_STRUCTURE_VERSION = "cost-structure-v1"
 _PRICE_STRUCTURE_VERSION = "price-structure-v1"
+_VOLATILITY_MOMENTUM_VERSION = "volatility-momentum-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -331,6 +332,85 @@ def _momentum_summary(trend_result: Any) -> str:
     if not pieces:
         return "动量：数据不足。"
     return "动量：" + "；".join(pieces) + "。"
+
+
+def _build_volatility_momentum_evidence(trend_result: Any, context_value: Any) -> Dict[str, Any]:
+    context = _mapping(context_value)
+    status = str(context.get("status") or "").strip().upper()
+    if status in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+        evidence_state = status
+    else:
+        legacy = _momentum_summary(trend_result)
+        if legacy != "动量：数据不足。":
+            evidence_state = "PARTIAL"
+            context = {
+                "status": "PARTIAL",
+                "reason": "LEGACY_MACD_RSI_ONLY",
+                "legacy_summary": legacy,
+                "volatility": {"status": "MISSING"},
+                "confirmed_divergence": {"status": "MISSING", "state": "NONE"},
+                "process_diagnostics": {"status": "MISSING", "classification_authority": "NONE"},
+            }
+        else:
+            evidence_state = "MISSING"
+            context = {
+                "status": "MISSING",
+                "reason": "VOLATILITY_MOMENTUM_CONTEXT_MISSING",
+                "volatility": {"status": "MISSING"},
+                "confirmed_divergence": {"status": "MISSING", "state": "NONE"},
+                "process_diagnostics": {"status": "MISSING", "classification_authority": "NONE"},
+            }
+    return {
+        "family": "volatility_momentum",
+        "version": _VOLATILITY_MOMENTUM_VERSION,
+        "evidence_state": evidence_state,
+        "context": context,
+        "observable_only": True,
+        "hard_veto": False,
+        "veto_codes": [],
+        "independent_action_authority": False,
+        "automatic_strategy_switching": False,
+    }
+
+
+def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) -> str:
+    context = _mapping(evidence.get("context"))
+    if str(context.get("reason") or "") == "LEGACY_MACD_RSI_ONLY":
+        return _momentum_summary(trend_result)
+    volatility = _mapping(context.get("volatility"))
+    momentum = _mapping(context.get("momentum"))
+    divergence = _mapping(context.get("confirmed_divergence"))
+    diagnostics = _mapping(context.get("process_diagnostics"))
+    parts: List[str] = []
+    realized = _safe_float(volatility.get("realized_volatility_20d_annualized_pct"))
+    tr_sma = _safe_float(volatility.get("true_range_sma_20_pct"))
+    if realized is not None:
+        parts.append(f"20日实现波动率年化 {realized:.1f}%")
+    if tr_sma is not None:
+        parts.append(f"20日真实波幅简单均值/现价 {tr_sma:.1f}%")
+    roc20 = _safe_float(momentum.get("roc_20_pct"))
+    roc60 = _safe_float(momentum.get("roc_60_pct"))
+    if roc20 is not None:
+        parts.append(f"ROC20 {roc20:+.1f}%")
+    if roc60 is not None:
+        parts.append(f"ROC60 {roc60:+.1f}%")
+    state = str(divergence.get("state") or "NONE")
+    if state == "BULLISH_DIVERGENCE":
+        parts.append("已确认同一摆动上的动量底背离")
+    elif state == "BEARISH_DIVERGENCE":
+        parts.append("已确认同一摆动上的动量顶背离")
+    if diagnostics.get("classification_authority") == "OBSERVATIONAL_ONLY":
+        parts.append("过程诊断仅作观察，不自动切换策略")
+    macd = _mapping(momentum.get("macd"))
+    rsi = _mapping(momentum.get("rsi"))
+    if macd.get("status"):
+        parts.append(f"MACD {macd['status']}")
+    if rsi.get("status"):
+        parts.append(f"RSI {rsi['status']}")
+    if not parts:
+        return _momentum_summary(trend_result)
+    prefix = "波动/动量：" if evidence.get("evidence_state") == "READY" else "波动/动量：数据覆盖未完全就绪；"
+    return prefix + "；".join(parts[:7]) + "。"
 
 
 def _conclusion(trend_result: Any, score: int) -> str:
@@ -1181,6 +1261,7 @@ def build_stock_factor_decision_summary(
     supply_demand_context: Optional[Dict[str, Any]] = None,
     cost_structure_context: Optional[Dict[str, Any]] = None,
     price_structure_context: Optional[Dict[str, Any]] = None,
+    volatility_momentum_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -1214,6 +1295,10 @@ def build_stock_factor_decision_summary(
         trend_result,
         price_structure_context,
     )
+    volatility_momentum_evidence = _build_volatility_momentum_evidence(
+        trend_result,
+        volatility_momentum_context,
+    )
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
         if include_canonical
@@ -1236,7 +1321,7 @@ def build_stock_factor_decision_summary(
         "trend": _trend_summary(trend_result),
         "volume_price": _volume_price_summary(trend_result),
         "price_structure": _price_structure_summary(price_structure_evidence, trend_result),
-        "momentum": _momentum_summary(trend_result),
+        "momentum": _volatility_momentum_summary(volatility_momentum_evidence, trend_result),
         "cost_structure": cost_structure,
         "valuation": valuation,
         "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
@@ -1297,6 +1382,7 @@ def build_stock_factor_decision_summary(
         "supply_demand_volume_price": supply_demand_volume_price,
         "cost_structure_evidence": cost_structure_evidence,
         "price_structure_evidence": price_structure_evidence,
+        "volatility_momentum_evidence": volatility_momentum_evidence,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

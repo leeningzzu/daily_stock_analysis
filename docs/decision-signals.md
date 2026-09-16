@@ -60,6 +60,8 @@ MUE V1 的 `cost-structure-v1` 将成本结构拆成两个不可互相冒充的�
 
 MUE V1 的 `price-structure-v1` 复用同一 completed daily history，不引入第二套行情或形态框架。首版使用对称的左右各 2 根 K 线确认局部 Pivot，并把视觉起点 `origin_time` 与最早可知的 `confirmed_at` 分开；目标日期裁剪保证后续数据不会把尚未确认的 Pivot 回填为历史已知事实。已确认 Pivot 压缩成可复用 Swing，再生成仍有效的最近支撑/压力以及 `UP_BREAKOUT / UP_BREAKOUT_RETEST_HOLD / FAILED_UP_BREAKOUT` 和对称的向下状态；所有事件只消费 completed close/high/low，不用 LLM 猜测，也不使用任意预测权重。数据源缺失/混源、目标 bar 缺失、warm-up 不足或非法 OHLC 均 fail-closed/降级。该证据族不新增 hard veto 或独立 BUY authority；杯柄、VCP、双底等更高阶几何仍由后续 Pattern/Trigger 基于同一 Pivot/Swing primitive 实现。
 
+MUE V1 的 `volatility-momentum-v1` 继续复用同一 completed daily history、`StockTrendAnalyzer` 的 MACD/RSI 公式和 `price-structure-v1` 的 confirmed Pivot/Swing，不安装第二套 TA 库。波动层记录 20 日年化实现波动率与 20 日 True Range 简单均值/现价比例；后者与筛选层历史 `atr_20_pct` 公式一致，但明确不是 Wilder/TA-Lib ATR。动量层增加 ROC20/ROC60，并把 MACD/RSI 当前状态作为同一结构化证据投影。背离只有在两个已确认同类 Pivot 上、以 Pivot `origin_time` 对齐当时因果可得的 MACD DIF/RSI12，并以第二 Pivot 的 `confirmed_at` 作为最早确认时间后才成立；同一 swing 上的 MACD/RSI 共用一个 correlation group，不能重复计票。首版还记录收益一阶自相关、5 日方差尺度比、绝对收益一阶自相关、偏度/超额峰度与 3σ 尾部事件数作为观察性过程诊断；这些值不执行显著性检验、不输出 A/B/C“世界”硬分类、不自动切换策略，也不独立升级 BUY 或新增 hard veto。ADF/OU 半衰期/GARCH/HMM 与跨周期重复诊断继续延后到相应研究/多周期 owner。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

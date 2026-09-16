@@ -502,6 +502,65 @@ def test_structured_price_structure_missing_support_does_not_fall_back_to_legacy
     assert summary["investor_brief"]["key_levels"]["support"] is None
 
 
+def test_volatility_momentum_is_first_class_observational_evidence_without_action_authority():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        volatility_momentum_context={
+            "status": "READY",
+            "timeframe": "1d",
+            "volatility": {
+                "status": "READY",
+                "realized_volatility_20d_annualized_pct": 22.5,
+                "true_range_sma_20_pct": 2.3,
+                "true_range_semantics": "SIMPLE_MEAN_TRUE_RANGE_20_NOT_WILDER_ATR",
+            },
+            "momentum": {
+                "status": "READY",
+                "roc_20_pct": 6.2,
+                "roc_60_pct": 12.4,
+                "macd": {"status": "多头"},
+                "rsi": {"status": "中性"},
+            },
+            "confirmed_divergence": {
+                "status": "READY",
+                "state": "BEARISH_DIVERGENCE",
+                "correlation_group": "same_swing:high:2026-01-01:2026-02-01",
+                "signals": [
+                    {"oscillator": "MACD_DIF", "correlation_group": "same_swing:high:2026-01-01:2026-02-01"},
+                    {"oscillator": "RSI_12", "correlation_group": "same_swing:high:2026-01-01:2026-02-01"},
+                ],
+                "independent_confirmation_group_count": 1,
+                "same_swing_double_counting": "PROHIBITED",
+            },
+            "process_diagnostics": {
+                "status": "READY",
+                "classification_authority": "OBSERVATIONAL_ONLY",
+                "world_classification": "NOT_PERFORMED",
+                "automatic_strategy_switching": False,
+            },
+        },
+        include_canonical=True,
+    )
+    evidence = summary["volatility_momentum_evidence"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["hard_veto"] is False
+    assert evidence["independent_action_authority"] is False
+    assert evidence["automatic_strategy_switching"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert "20日实现波动率年化 22.5%" in summary["sections"]["momentum"]
+    assert "顶背离" in summary["sections"]["momentum"]
+    assert "不自动切换策略" in summary["sections"]["momentum"]
+
+
+def test_missing_structured_volatility_momentum_context_preserves_legacy_momentum_projection():
+    summary = build_stock_factor_decision_summary(_trend(signal_score=68), include_canonical=True)
+    evidence = summary["volatility_momentum_evidence"]
+    assert evidence["evidence_state"] == "PARTIAL"
+    assert evidence["context"]["reason"] == "LEGACY_MACD_RSI_ONLY"
+    assert "MACD多头结构" in summary["sections"]["momentum"]
+    assert summary["canonical_decision"]["action"] == "WAIT"
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

@@ -210,11 +210,12 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
         }.items()
         if value not in (None, "")
     }
+    identity_state = str(evidence_identity.get("identity_state") or "").upper()
     identity_status = _daily_identity_context_status(evidence_identity)
     identity_reason = str(evidence_identity.get("reason") or "").strip() or None
     warnings = (
         []
-        if evidence_identity.get("identity_state") == "READY"
+        if identity_state == "READY"
         else [identity_reason or "daily_evidence_identity_not_ready"]
     )
 
@@ -242,25 +243,14 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
     items: Dict[str, AnalysisContextItem] = {}
     for key in ("today", "yesterday"):
         value = context.get(key)
-        if key == "today" and value:
+        item_status = ContextFieldStatus.AVAILABLE if value else ContextFieldStatus.MISSING
+        if key == "today" and value and identity_state in {"STALE", "PARTIAL"}:
             item_status = identity_status
-            missing_reason = (
-                identity_reason
-                if item_status == ContextFieldStatus.MISSING
-                else None
-            )
-        else:
-            item_status = (
-                ContextFieldStatus.AVAILABLE
-                if value
-                else ContextFieldStatus.MISSING
-            )
-            missing_reason = None if value else f"{key}_missing"
         items[key] = AnalysisContextItem(
             status=item_status,
             value=value or None,
             source="storage.get_analysis_context",
-            missing_reason=missing_reason,
+            missing_reason=None if value else f"{key}_missing",
         )
     if date_value:
         items["date"] = AnalysisContextItem(
@@ -271,7 +261,7 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
         )
 
     bar_statuses = [items[key].status for key in ("today", "yesterday")]
-    if identity_status != ContextFieldStatus.AVAILABLE:
+    if identity_state in {"STALE", "PARTIAL"}:
         block_status = identity_status
     elif all(status == ContextFieldStatus.AVAILABLE for status in bar_statuses):
         block_status = ContextFieldStatus.AVAILABLE

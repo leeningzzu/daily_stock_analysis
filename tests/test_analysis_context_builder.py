@@ -365,7 +365,7 @@ def test_daily_evidence_identity_missing_source_fails_closed(monkeypatch) -> Non
     ).blocks["daily_bars"]
     identity = block.metadata["evidence_identity"]
 
-    assert block.status == ContextFieldStatus.MISSING
+    assert block.status == ContextFieldStatus.AVAILABLE
     assert identity["identity_state"] == "MISSING"
     assert identity["reason"] == "daily_bar_source_missing"
     assert identity["daily_bar_identity_sha256"] is None
@@ -376,10 +376,27 @@ def test_daily_evidence_identity_unproven_phase_fails_closed(monkeypatch) -> Non
     block = AnalysisContextBuilder.build(_artifacts()).blocks["daily_bars"]
     identity = block.metadata["evidence_identity"]
 
-    assert block.status == ContextFieldStatus.MISSING
+    assert block.status == ContextFieldStatus.AVAILABLE
     assert identity["identity_state"] == "UNKNOWN"
     assert identity["reason"] == "effective_daily_bar_date_unproven"
     assert identity["completed_bar_proven"] is False
+
+
+def test_daily_evidence_identity_legacy_inputs_do_not_rewrite_data_quality(monkeypatch) -> None:
+    base_context = {
+        "date": "2026-03-26",
+        "today": {"close": 1880.0},
+        "yesterday": {"close": 1870.0},
+    }
+    pack = AnalysisContextBuilder.build(
+        _artifacts(phase=None, base_context=base_context)
+    )
+
+    identity = pack.blocks["daily_bars"].metadata["evidence_identity"]
+    assert identity["identity_state"] == "MISSING"
+    assert pack.blocks["daily_bars"].status == ContextFieldStatus.AVAILABLE
+    assert pack.data_quality.block_scores["daily_bars"] == 100
+    assert "daily_bars: missing" not in pack.data_quality.limitations
 
 
 def test_daily_bar_identity_hash_changes_with_bar_content(monkeypatch) -> None:

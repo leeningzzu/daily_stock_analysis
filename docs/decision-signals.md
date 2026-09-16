@@ -58,6 +58,8 @@ MUE V1 的 `supply-demand-volume-price-v1` 只使用 completed OHLCV，不把实
 
 MUE V1 的 `cost-structure-v1` 将成本结构拆成两个不可互相冒充的证据层：现有 `ChipDistribution` 继续作为供应商估算的 current/recent snapshot，只有来源和日期与本轮 target date 可证明时才标 `READY_CURRENT_ONLY`，并明确不能进入历史 PIT replay；历史可重放层只复用 completed daily bars，以 20/60 个交易时段的 `Σ(HLC3×volume)/Σ(volume)` 形成 `BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST`。该量价参考不是传统日内 VWAP、真实 Volume Profile 或实际持仓取得成本；source/warm-up/target-date/正成交量不足时 fail-closed。两层仅用 provider 自身 70%/90% 成本区形成 `CONVERGENT/DIVERGENT/SINGLE_SOURCE_ONLY/NOT_COMPARABLE`，不发明固定百分比阈值，不推断机构意图，也不独立升级 BUY 或增加 hard veto。AVWAP、POC/VAH/VAL、历史 provider-chip replay 与 intraday profile 留待对应 Pivot/Swing、event-known-at 和分钟/逐笔数据 owner 成熟后再进入。
 
+MUE V1 的 `price-structure-v1` 复用同一 completed daily history，不引入第二套行情或形态框架。首版使用对称的左右各 2 根 K 线确认局部 Pivot，并把视觉起点 `origin_time` 与最早可知的 `confirmed_at` 分开；目标日期裁剪保证后续数据不会把尚未确认的 Pivot 回填为历史已知事实。已确认 Pivot 压缩成可复用 Swing，再生成仍有效的最近支撑/压力以及 `UP_BREAKOUT / UP_BREAKOUT_RETEST_HOLD / FAILED_UP_BREAKOUT` 和对称的向下状态；所有事件只消费 completed close/high/low，不用 LLM 猜测，也不使用任意预测权重。数据源缺失/混源、目标 bar 缺失、warm-up 不足或非法 OHLC 均 fail-closed/降级。该证据族不新增 hard veto 或独立 BUY authority；杯柄、VCP、双底等更高阶几何仍由后续 Pattern/Trigger 基于同一 Pivot/Swing primitive 实现。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

@@ -23,6 +23,7 @@ _MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
 _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
 _COST_STRUCTURE_VERSION = "cost-structure-v1"
+_PRICE_STRUCTURE_VERSION = "price-structure-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -244,6 +245,83 @@ def _structure_summary(trend_result: Any) -> str:
     if resistance is not None:
         return f"结构：上方压力参考 {_format_price(resistance)}，下方支撑暂未形成可靠数值。"
     return "结构：当前可用数据不足以给出可靠支撑/压力参考。"
+
+
+def _build_price_structure_evidence(trend_result: Any, price_structure_context: Any) -> Dict[str, Any]:
+    context = _mapping(price_structure_context)
+    status = str(context.get("status") or "").strip().upper()
+    if status in {"READY", "PARTIAL", "MISSING", "UNKNOWN"}:
+        evidence_state = status
+    else:
+        support, resistance = _nearest_levels(trend_result)
+        if support is not None or resistance is not None:
+            evidence_state = "PARTIAL"
+            context = {
+                "status": "PARTIAL",
+                "reason": "LEGACY_LEVELS_ONLY",
+                "nearest_support": {"status": "READY", "price": support} if support is not None else {"status": "MISSING"},
+                "nearest_resistance": {"status": "READY", "price": resistance} if resistance is not None else {"status": "MISSING"},
+                "range_state": "LEGACY_LEVELS_ONLY",
+                "structure_event": {"state": "NONE", "provisional": False},
+            }
+        else:
+            evidence_state = "MISSING"
+            context = {
+                "status": "MISSING",
+                "reason": "PRICE_STRUCTURE_CONTEXT_MISSING",
+                "nearest_support": {"status": "MISSING"},
+                "nearest_resistance": {"status": "MISSING"},
+                "range_state": "UNKNOWN",
+                "structure_event": {"state": "NONE", "provisional": False},
+            }
+    return {
+        "family": "price_structure",
+        "version": _PRICE_STRUCTURE_VERSION,
+        "evidence_state": evidence_state,
+        "context": context,
+        "observable_only": True,
+        "hard_veto": False,
+        "veto_codes": [],
+        "independent_action_authority": False,
+    }
+
+
+def _price_structure_level(evidence: Dict[str, Any], key: str) -> Optional[float]:
+    context = _mapping(evidence.get("context"))
+    level = _mapping(context.get(key))
+    value = _safe_float(level.get("price"))
+    return value if value is not None and value > 0 else None
+
+
+def _price_structure_summary(evidence: Dict[str, Any], trend_result: Any) -> str:
+    context = _mapping(evidence.get("context"))
+    if str(context.get("reason") or "") == "LEGACY_LEVELS_ONLY":
+        return _structure_summary(trend_result)
+    support = _price_structure_level(evidence, "nearest_support")
+    resistance = _price_structure_level(evidence, "nearest_resistance")
+    parts: List[str] = []
+    if support is not None:
+        parts.append(f"已确认支撑 {_format_price(support)}")
+    if resistance is not None:
+        parts.append(f"已确认压力 {_format_price(resistance)}")
+    event_state = str(_mapping(context.get("structure_event")).get("state") or "NONE")
+    event_labels = {
+        "UP_BREAKOUT": "完成K线已突破确认压力",
+        "UP_BREAKOUT_RETEST_HOLD": "突破后回踩原压力并保持其上",
+        "FAILED_UP_BREAKOUT": "向上突破后重新收回原压力下方",
+        "DOWN_BREAKDOWN": "完成K线已跌破确认支撑",
+        "DOWN_BREAKDOWN_RETEST_REJECT": "跌破后反抽原支撑受阻",
+        "FAILED_DOWN_BREAKDOWN": "向下跌破后重新收回原支撑上方",
+    }
+    if event_state in event_labels:
+        parts.append(event_labels[event_state])
+    range_state = str(context.get("range_state") or "")
+    if range_state == "BETWEEN_CONFIRMED_LEVELS":
+        parts.append("当前位于已确认支撑与压力之间")
+    if not parts:
+        return "结构：尚未形成足够的已确认 Pivot/Swing 结构证据。"
+    prefix = "结构：" if evidence.get("evidence_state") == "READY" else "结构：数据覆盖未完全就绪；"
+    return prefix + "；".join(parts) + "。"
 
 
 def _momentum_summary(trend_result: Any) -> str:
@@ -941,6 +1019,14 @@ def _build_asset_research_brief_v1(trend_result, summary):
     support = max(support_values) if support_values else None
     resistance = min(resistance_values) if resistance_values else None
 
+    price_structure_evidence = summary.get("price_structure_evidence")
+    if isinstance(price_structure_evidence, dict):
+        structure_context = _mapping(price_structure_evidence.get("context"))
+        if "nearest_support" in structure_context:
+            support = _asset_brief_v1_num(_mapping(structure_context.get("nearest_support")).get("price"))
+        if "nearest_resistance" in structure_context:
+            resistance = _asset_brief_v1_num(_mapping(structure_context.get("nearest_resistance")).get("price"))
+
     trend = _asset_brief_v1_text(
         sections.get("trend"), ("\u8d8b\u52bf\uff1a", "\u8d8b\u52bf:")
     )
@@ -1094,6 +1180,7 @@ def build_stock_factor_decision_summary(
     relative_strength_context: Optional[Dict[str, Any]] = None,
     supply_demand_context: Optional[Dict[str, Any]] = None,
     cost_structure_context: Optional[Dict[str, Any]] = None,
+    price_structure_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -1123,6 +1210,10 @@ def build_stock_factor_decision_summary(
         chip_data,
         cost_structure_context,
     )
+    price_structure_evidence = _build_price_structure_evidence(
+        trend_result,
+        price_structure_context,
+    )
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
         if include_canonical
@@ -1135,13 +1226,16 @@ def build_stock_factor_decision_summary(
         else None if include_canonical else 0
     )
     support, _ = _nearest_levels(trend_result)
+    structured_context = _mapping(price_structure_evidence.get("context"))
+    if "nearest_support" in structured_context:
+        support = _price_structure_level(price_structure_evidence, "nearest_support")
 
     valuation = _valuation_summary(fundamental_context)
     cost_structure = _cost_structure_evidence_summary(cost_structure_evidence, chip_data)
     sections = {
         "trend": _trend_summary(trend_result),
         "volume_price": _volume_price_summary(trend_result),
-        "price_structure": _structure_summary(trend_result),
+        "price_structure": _price_structure_summary(price_structure_evidence, trend_result),
         "momentum": _momentum_summary(trend_result),
         "cost_structure": cost_structure,
         "valuation": valuation,
@@ -1202,6 +1296,7 @@ def build_stock_factor_decision_summary(
         "trend_relative_strength": trend_relative_strength,
         "supply_demand_volume_price": supply_demand_volume_price,
         "cost_structure_evidence": cost_structure_evidence,
+        "price_structure_evidence": price_structure_evidence,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

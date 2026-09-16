@@ -450,6 +450,58 @@ def test_provider_only_or_divergent_cost_structure_does_not_veto_or_upgrade():
     assert divergent["canonical_decision"]["action"] == "WAIT"
 
 
+def test_price_structure_is_first_class_but_never_independent_action_authority():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99),
+        price_structure_context={
+            "status": "READY",
+            "nearest_support": {"status": "READY", "price": 10.1, "origin_time": "2026-01-05", "confirmed_at": "2026-01-07"},
+            "nearest_resistance": {"status": "READY", "price": 11.2, "origin_time": "2026-01-08", "confirmed_at": "2026-01-12"},
+            "range_state": "BETWEEN_CONFIRMED_LEVELS",
+            "structure_event": {"state": "UP_BREAKOUT_RETEST_HOLD", "level": 10.8, "provisional": False},
+            "pivots": [],
+            "swings": [],
+        },
+        include_canonical=True,
+    )
+    evidence = summary["price_structure_evidence"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["hard_veto"] is False
+    assert evidence["independent_action_authority"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert "已确认支撑 10.10" in summary["sections"]["price_structure"]
+    assert "突破后回踩" in summary["sections"]["price_structure"]
+    assert summary["investor_brief"]["key_levels"]["support"] == "10.10"
+    assert summary["investor_brief"]["key_levels"]["resistance"] == "11.20"
+
+
+def test_missing_structured_price_context_preserves_legacy_level_projection():
+    summary = build_stock_factor_decision_summary(_trend(signal_score=68), include_canonical=True)
+    evidence = summary["price_structure_evidence"]
+    assert evidence["evidence_state"] == "PARTIAL"
+    assert evidence["context"]["reason"] == "LEGACY_LEVELS_ONLY"
+    assert "主要支撑参考 10.20" in summary["sections"]["price_structure"]
+    assert summary["canonical_decision"]["action"] == "WAIT"
+
+
+def test_structured_price_structure_missing_support_does_not_fall_back_to_legacy_level():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=68, support_levels=[10.0, 10.2]),
+        price_structure_context={
+            "status": "PARTIAL",
+            "reason": "NO_CONFIRMED_PIVOTS",
+            "nearest_support": {"status": "MISSING"},
+            "nearest_resistance": {"status": "MISSING"},
+            "range_state": "OPEN_STRUCTURE",
+            "structure_event": {"state": "NONE", "provisional": False},
+        },
+        include_canonical=True,
+    )
+    assert "10.20" not in summary["action_condition"]
+    assert "主要支撑 10.20" not in summary["invalidation_condition"]
+    assert summary["investor_brief"]["key_levels"]["support"] is None
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

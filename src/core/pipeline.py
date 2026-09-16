@@ -75,6 +75,7 @@ from src.services.analysis_context_builder import (
 )
 from src.services.market_structure_service import MarketStructureService
 from src.services.relative_strength_service import RelativeStrengthService
+from src.services.supply_demand_service import build_supply_demand_context
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -648,6 +649,12 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 相对强弱证据构建失败，按缺失处理: {e}")
 
+            supply_demand_context = build_supply_demand_context(
+                stock_code=code,
+                history=completed_daily_history,
+                target_date=daily_market_target_date,
+            )
+
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
                 self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
@@ -667,6 +674,7 @@ class StockAnalysisPipeline:
                     market_structure_context=market_structure_context,
                     canonical_trend_result=canonical_trend_result,
                     relative_strength_context=relative_strength_context,
+                    supply_demand_context=supply_demand_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -918,6 +926,7 @@ class StockAnalysisPipeline:
                     daily_market_context=daily_market_context,
                     market_structure_context=market_structure_context,
                     relative_strength_context=relative_strength_context,
+                    supply_demand_context=supply_demand_context,
                 )
                 self._promote_p0_deterministic_result_after_explanation_failure(
                     result,
@@ -1414,6 +1423,7 @@ class StockAnalysisPipeline:
         market_structure_context: Optional[Dict[str, Any]] = None,
         canonical_trend_result: Optional[TrendAnalysisResult] = None,
         relative_strength_context: Optional[Dict[str, Any]] = None,
+        supply_demand_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1730,6 +1740,7 @@ class StockAnalysisPipeline:
                     daily_market_context=daily_market_context,
                     market_structure_context=market_structure_context,
                     relative_strength_context=relative_strength_context,
+                    supply_demand_context=supply_demand_context,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2214,6 +2225,7 @@ class StockAnalysisPipeline:
         daily_market_context: Optional[DailyMarketContext] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
         relative_strength_context: Optional[Dict[str, Any]] = None,
+        supply_demand_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Attach the factor summary and, in P0, finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
@@ -2243,6 +2255,7 @@ class StockAnalysisPipeline:
                 daily_market_context=daily_market_context,
                 market_structure_context=market_structure_context,
                 relative_strength_context=relative_strength_context,
+                supply_demand_context=supply_demand_context,
                 include_canonical=self.p0_bounded_trial,
             )
         except Exception as exc:

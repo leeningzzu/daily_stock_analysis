@@ -338,6 +338,58 @@ def test_missing_relative_strength_preserves_legacy_decision_and_weak_completed_
     assert "WEAK_TREND" in weak["canonical_decision"]["reason_codes"]
 
 
+def test_supply_demand_is_first_class_observable_evidence_without_new_action_authority():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99, volume_status=_enum("放量上涨"), volume_ratio_5d=1.8),
+        supply_demand_context={
+            "status": "READY",
+            "state": "DEMAND_PRESSURE",
+            "relative_volume": {"volume_ratio_20d": 1.6},
+            "directional_volume": {"signed_volume_balance": 0.35},
+            "close_location_flow": {"cmf_20": 0.18},
+            "institutional_intent_claim": "NOT_INFERRED",
+        },
+        include_canonical=True,
+    )
+    evidence = summary["supply_demand_volume_price"]
+    assert evidence["evidence_state"] == "READY"
+    assert evidence["observable_only"] is True
+    assert evidence["institutional_intent_inferred"] is False
+    assert evidence["hard_veto"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert "不推断机构意图" in summary["sections"]["supply_demand_volume_price"]
+    assert "主力" not in str(evidence)
+    assert "吸筹" not in str(evidence)
+    assert "出货" not in str(evidence)
+
+
+def test_supply_demand_partial_or_supply_pressure_does_not_duplicate_existing_volume_veto():
+    summary = build_stock_factor_decision_summary(
+        _trend(signal_score=99, volume_status=_enum("量能正常"), volume_ratio_5d=1.0),
+        supply_demand_context={
+            "status": "PARTIAL",
+            "state": "SUPPLY_PRESSURE",
+            "relative_volume": {"volume_ratio_20d": 1.7},
+            "directional_volume": {"signed_volume_balance": -0.5},
+            "close_location_flow": {"cmf_20": -0.3},
+            "reason": "SOURCE_ALIGNMENT_UNPROVEN",
+        },
+        include_canonical=True,
+    )
+    assert summary["supply_demand_volume_price"]["evidence_state"] == "PARTIAL"
+    assert summary["supply_demand_volume_price"]["hard_veto"] is False
+    assert summary["canonical_decision"]["action"] == "WAIT"
+    assert summary["canonical_decision"]["reason_codes"] == ["CONDITIONAL_OBSERVATION_ONLY"]
+
+    legacy_veto = build_stock_factor_decision_summary(
+        _trend(signal_score=99, volume_status=_enum("放量下跌"), volume_ratio_5d=1.9),
+        supply_demand_context={"status": "READY", "state": "SUPPLY_PRESSURE"},
+        include_canonical=True,
+    )
+    assert legacy_veto["canonical_decision"]["action"] == "PASS"
+    assert legacy_veto["canonical_decision"]["reason_codes"].count("HEAVY_VOLUME_DOWN") == 1
+
+
 def test_p0_non_conflicting_explanation_is_retained_but_not_action_authority():
     summary = build_stock_factor_decision_summary(
         _trend(signal_score=68), include_canonical=True

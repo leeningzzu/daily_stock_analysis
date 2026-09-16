@@ -21,6 +21,7 @@ _MISSING_EVIDENCE_HINTS = ("数据不足", "无法完成分析", "无法判断")
 _CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
 _MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
 _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
+_SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
 
 
 def _enum_value(value: Any) -> str:
@@ -363,6 +364,73 @@ def _trend_relative_strength_summary(evidence: Dict[str, Any]) -> str:
         f"的 {relative.get('horizon_sessions', 60)} 个交易时段比率变化 {ratio_text}，"
         f"状态 {rel.get('state') or 'UNKNOWN'}。"
     )
+
+
+def _build_supply_demand_volume_price_evidence(
+    trend_result: Any,
+    supply_demand_context: Any,
+) -> Dict[str, Any]:
+    """Compose completed-bar supply/demand evidence without adding action authority."""
+    context = _mapping(supply_demand_context)
+    context_status = str(context.get("status") or "").strip().upper()
+    legacy_status = _enum_value(getattr(trend_result, "volume_status", None))
+    legacy_ratio = _safe_float(getattr(trend_result, "volume_ratio_5d", None))
+
+    if context_status == "READY" and legacy_status:
+        evidence_state = "READY"
+    elif context_status in {"READY", "PARTIAL"} or legacy_status:
+        evidence_state = "PARTIAL"
+    else:
+        evidence_state = "UNKNOWN"
+
+    return {
+        "family": "supply_demand_volume_price",
+        "version": _SUPPLY_DEMAND_VOLUME_PRICE_VERSION,
+        "evidence_state": evidence_state,
+        "observable_only": True,
+        "institutional_intent_inferred": False,
+        "legacy_volume": {
+            "status": legacy_status or None,
+            "volume_ratio_5d": legacy_ratio,
+            "correlation_group": "relative_volume",
+        },
+        "completed_bar_context": context or {
+            "status": "MISSING",
+            "reason": "SUPPLY_DEMAND_CONTEXT_MISSING",
+        },
+        "hard_veto": False,
+        "veto_codes": [],
+        "authority_note": "Existing HEAVY_VOLUME_DOWN canonical veto remains owned by legacy volume_status; this family does not add a second veto.",
+    }
+
+
+def _supply_demand_volume_price_summary(evidence: Dict[str, Any]) -> str:
+    context = _mapping(evidence.get("completed_bar_context"))
+    status = str(context.get("status") or "").upper()
+    if status not in {"READY", "PARTIAL"}:
+        return "供需/量价：completed OHLCV 证据不足，暂不推断供需状态。"
+    relative = _mapping(context.get("relative_volume"))
+    directional = _mapping(context.get("directional_volume"))
+    close_location = _mapping(context.get("close_location_flow"))
+    ratio = _safe_float(relative.get("volume_ratio_20d"))
+    balance = _safe_float(directional.get("signed_volume_balance"))
+    cmf = _safe_float(close_location.get("cmf_20"))
+    state_label = {
+        "DEMAND_PRESSURE": "需求压力占优",
+        "SUPPLY_PRESSURE": "供应压力占优",
+        "BALANCED": "供需大致平衡",
+        "CONFLICT": "量价信号冲突",
+    }.get(str(context.get("state") or "").upper(), "供需状态不明")
+    parts = [state_label]
+    if ratio is not None:
+        parts.append(f"20日相对量 {ratio:.2f}x")
+    if balance is not None:
+        parts.append(f"方向量能平衡 {balance:+.2f}")
+    if cmf is not None:
+        parts.append(f"CMF20 {cmf:+.2f}")
+    if status == "PARTIAL":
+        parts.append("数据源一致性未充分证明")
+    return "供需/量价：" + "；".join(parts) + "；仅描述可观察压力，不推断机构意图。"
 
 
 def _canonical_decision(
@@ -939,6 +1007,7 @@ def build_stock_factor_decision_summary(
     daily_market_context: Any = None,
     market_structure_context: Optional[Dict[str, Any]] = None,
     relative_strength_context: Optional[Dict[str, Any]] = None,
+    supply_demand_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -959,6 +1028,10 @@ def build_stock_factor_decision_summary(
     trend_relative_strength = _build_trend_relative_strength_evidence(
         trend_result,
         relative_strength_context,
+    )
+    supply_demand_volume_price = _build_supply_demand_volume_price_evidence(
+        trend_result,
+        supply_demand_context,
     )
     canonical_decision = (
         _canonical_decision(trend_result, market_sector_regime)
@@ -984,6 +1057,7 @@ def build_stock_factor_decision_summary(
         "valuation": valuation,
         "market_sector_regime": _market_sector_regime_summary(market_sector_regime),
         "trend_relative_strength": _trend_relative_strength_summary(trend_relative_strength),
+        "supply_demand_volume_price": _supply_demand_volume_price_summary(supply_demand_volume_price),
     }
 
     why: List[str] = []
@@ -1036,6 +1110,7 @@ def build_stock_factor_decision_summary(
         "sections": sections,
         "market_sector_regime": market_sector_regime,
         "trend_relative_strength": trend_relative_strength,
+        "supply_demand_volume_price": supply_demand_volume_price,
     }
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision

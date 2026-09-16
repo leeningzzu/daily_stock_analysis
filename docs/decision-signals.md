@@ -54,6 +54,8 @@ MUE V1 的 `market-sector-regime-v1` 不新增行情源、调度器或第二套�
 
 MUE V1 的 `trend-relative-strength-v1` 把“绝对趋势”和“相对基准强弱”分开：绝对趋势继续复用 `StockTrendAnalyzer`，但 canonical factor 只消费至少 60 根 completed daily bars，不消费盘中 realtime 拼接的未完成日线或 MA60 的短历史 fallback；相对强弱首版对 A 股使用代码 `510300` 的沪深300ETF作为显式 `etf_proxy`，不得表述为沪深300指数原始历史。股票与 benchmark 的首次日线 warm-up 均取 120 个日历日但不增加请求次数；RS 以 benchmark 的 61 个 completed observations 定义 60-session 起止日期，并要求股票在完全相同的 start/end 日期有收盘价；warm-up、target date 或共享端点不足时保持 MISSING/UNKNOWN。RS 明确是 provider price-return proxy，不冒充 total-return 指数；Production READY 还要求股票起止端点 `data_source` 与 benchmark provider 一致，跨源只能 PARTIAL。正 RS 只能确认，负 RS 首版也不独立形成 hard veto，阈值与权重留给后续 outcome/PIT 校准。
 
+MUE V1 的 `supply-demand-volume-price-v1` 只使用 completed OHLCV，不把实时换手率或供应商“主力净流入”标签当成历史确定性真值。首版要求至少 21 根 completed bars，复用既有 5 日量比/量能状态，并补充 20 日相对量、最近 5 日对前 5 日量能变化、上涨/下跌方向成交量平衡与 CMF20；同一底层量能原语按 `relative_volume`、`directional_volume`、`close_location_flow` correlation group 管理，不能重复计票。数据窗口 `data_source` 只有一个明确来源时才能 READY，缺源或混源只到 PARTIAL。该证据族仅描述可观察的需求增强、供应压力、量能收缩或冲突，不宣称“主力吸筹/出货”；也不新增 hard veto，既有 `HEAVY_VOLUME_DOWN` 否决仍由 legacy completed-bar `volume_status` 唯一拥有。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：

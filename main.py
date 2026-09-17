@@ -77,6 +77,10 @@ from src.brokers.futu.portfolio import FutuPortfolioError
 from data_provider.base import canonical_stock_code
 from src.services.stock_list_parser import split_stock_list
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
+from src.services.pit_identity import (
+    build_auto_screen_selection_context,
+    build_specified_codes_selection_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -939,6 +943,9 @@ def run_full_analysis(
         market_context_summary = ""
         market_context_full_report = ""
         market_context_generated_during_stock = False
+        research_selection_context = getattr(args, "research_selection_context", None)
+        if not isinstance(research_selection_context, dict):
+            research_selection_context = build_specified_codes_selection_context(query_source="cli")
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=args.workers,
@@ -957,6 +964,7 @@ def run_full_analysis(
                 if p0_bounded_trial
                 else None
             ),
+            research_selection_context=research_selection_context,
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -1240,7 +1248,8 @@ def _run_auto_screen_shared_analysis(
         return True, resolution
 
     provenance = resolution.get("provenance") or {}
-    analysis_args = args
+    analysis_args = argparse.Namespace(**vars(args))
+    analysis_args.research_selection_context = build_auto_screen_selection_context(provenance)
     if bounded_live:
         if len(stock_codes) != 1:
             raise P0BoundedTrialError("AUTO_SCREEN bounded live requires exactly one screened candidate")
@@ -1249,7 +1258,6 @@ def _run_auto_screen_shared_analysis(
         if not bounded_model:
             raise P0BoundedTrialError("AUTO_SCREEN bounded live requires an exact model identity")
         config.litellm_model = bounded_model
-        analysis_args = argparse.Namespace(**vars(args))
         analysis_args.p0_bounded_trial = True
         analysis_args.no_notify = True
         _apply_p0_runtime_config(config, analysis_args)

@@ -467,12 +467,19 @@ class MainScheduleModeTestCase(unittest.TestCase):
             max_results=2,
             selection_seed="seed-1",
         )
-        run_full_analysis.assert_called_once_with(
-            config,
-            args,
-            ["600519", "000001"],
-            raise_errors=True,
+        run_full_analysis.assert_called_once()
+        analysis_args = run_full_analysis.call_args.args[1]
+        self.assertIsNot(analysis_args, args)
+        self.assertEqual(
+            analysis_args.research_selection_context["selection_source"],
+            "AUTO_SCREEN",
         )
+        self.assertEqual(
+            analysis_args.research_selection_context["screening"]["run_id"],
+            "screen-run-1",
+        )
+        self.assertEqual(run_full_analysis.call_args.args[2], ["600519", "000001"])
+        self.assertTrue(run_full_analysis.call_args.kwargs["raise_errors"])
 
     def test_auto_screen_shared_analysis_skips_full_analysis_when_no_candidates(self) -> None:
         args = self._make_args()

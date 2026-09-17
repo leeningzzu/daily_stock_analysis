@@ -53,3 +53,52 @@ class PredictionLedgerRepository:
                 .order_by(PredictionLedgerRecord.id)
             ).scalars().all()
             return list(rows)
+
+    def get_by_prediction_hash(self, prediction_hash: str) -> Optional[PredictionLedgerRecord]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(PredictionLedgerRecord)
+                .where(PredictionLedgerRecord.prediction_hash == str(prediction_hash))
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def list_all(self) -> List[PredictionLedgerRecord]:
+        with self.db.get_session() as session:
+            return list(
+                session.execute(
+                    select(PredictionLedgerRecord).order_by(
+                        PredictionLedgerRecord.decision_time,
+                        PredictionLedgerRecord.id,
+                    )
+                ).scalars().all()
+            )
+
+    def list_dataset_candidates(
+        self,
+        *,
+        strategy_id: str,
+        strategy_version: str,
+        feature_schema_version: str,
+        feature_schema_hash: str,
+    ) -> List[PredictionLedgerRecord]:
+        """Return the frozen white-box opportunity denominator in session order."""
+        with self.db.get_session() as session:
+            return list(
+                session.execute(
+                    select(PredictionLedgerRecord)
+                    .where(
+                        PredictionLedgerRecord.market == "cn",
+                        PredictionLedgerRecord.instrument_type == "stock",
+                        PredictionLedgerRecord.strategy_id == str(strategy_id),
+                        PredictionLedgerRecord.strategy_version == str(strategy_version),
+                        PredictionLedgerRecord.feature_schema_version == str(feature_schema_version),
+                        PredictionLedgerRecord.feature_schema_hash == str(feature_schema_hash),
+                        PredictionLedgerRecord.canonical_action == "WAIT",
+                    )
+                    .order_by(
+                        PredictionLedgerRecord.data_as_of,
+                        PredictionLedgerRecord.decision_time,
+                        PredictionLedgerRecord.id,
+                    )
+                ).scalars().all()
+            )

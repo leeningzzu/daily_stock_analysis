@@ -11,10 +11,15 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
+from src.services.pit_identity import (
+    build_cn_stock_asset_identity,
+    canonical_json,
+    normalize_research_selection_context,
+)
 from src.storage import DatabaseManager
 
 
-PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v1"
+PREDICTION_LEDGER_SCHEMA_VERSION = "prediction-ledger-v2"
 PREDICTION_FEATURE_SCHEMA_VERSION = "stock-factor-evidence-v1"
 
 _FACTOR_EVIDENCE_KEYS = (
@@ -66,6 +71,7 @@ class PredictionLedgerService:
         result: Any,
         decision_signal: Optional[Mapping[str, Any]] = None,
         code_sha: Optional[str] = None,
+        selection_context: Optional[Mapping[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         history_id = self._positive_int(analysis_history_id, "analysis_history_id")
         history = self.db.get_analysis_history_by_id(history_id)
@@ -99,36 +105,87 @@ class PredictionLedgerService:
         )
 
         bound_code_sha = self._normalize_code_sha(code_sha or os.getenv("GITHUB_SHA"))
-        data_as_of = self._parse_date(
-            self._mapping(metadata.get("market_phase_summary")).get("session_date")
-        )
+        result_snapshot = self._mapping(getattr(result, "diagnostic_context_snapshot", None))
+        phase_summary = self._mapping(result_snapshot.get("market_phase_summary"))
+        if not phase_summary:
+            phase_summary = self._mapping(metadata.get("market_phase_summary"))
+        data_as_of = self._parse_date(phase_summary.get("session_date"))
         available_at_max = self._parse_datetime(multi_timeframe.get("available_at_max"))
         adjustment_basis = self._text(multi_timeframe.get("adjustment_basis"))
         provider_identity = self._text(
             multi_timeframe.get("provider_identity") or multi_timeframe.get("provider")
         )
-        universe_snapshot_id = self._text(metadata.get("universe_snapshot_id"))
+        raw_selection_context = (
+            dict(selection_context) if isinstance(selection_context, Mapping) else {}
+        )
+        normalized_selection = (
+            normalize_research_selection_context(raw_selection_context)
+            if raw_selection_context
+            else {}
+        )
+        selection_source = self._text(normalized_selection.get("selection_source"))
+        selection_context_hash = self._text(
+            normalized_selection.get("selection_context_hash")
+        )
+        selection_context_json = (
+            canonical_json(normalized_selection) if normalized_selection else None
+        )
+        universe_snapshot_id = self._text(
+            normalized_selection.get("universe_snapshot_id")
+            or metadata.get("universe_snapshot_id")
+        )
+        stock_code = self._text(signal.get("stock_code")) or self._text(
+            getattr(result, "code", None)
+        )
+        asset_identity = build_cn_stock_asset_identity(stock_code, signal_market)
+        asset_identity_hash = self._text(self._mapping(asset_identity).get("identity_hash"))
+        asset_identity_json = canonical_json(asset_identity) if asset_identity else None
+        data_snapshot_identity = self._text(
+            multi_timeframe.get("data_snapshot_identity")
+        )
+        frozen_decision_time = self._parse_aware_datetime(
+            result_snapshot.get("research_decision_time_utc")
+        )
+        phase_time = self._parse_aware_datetime(phase_summary.get("market_local_time"))
+        decision_time = frozen_decision_time or phase_time or history.created_at
+        decision_timezone = (
+            self._text(self._mapping(asset_identity).get("timezone"))
+            if frozen_decision_time is not None or phase_time is not None
+            else None
+        )
 
         pit_reasons = []
         if available_at_max is None:
             pit_reasons.append("AVAILABLE_AT_NOT_BOUND")
         if not adjustment_basis:
             pit_reasons.append("ADJUSTMENT_BASIS_NOT_PERSISTED")
-        if not universe_snapshot_id:
-            pit_reasons.append("UNIVERSE_SNAPSHOT_NOT_BOUND")
         if not bound_code_sha:
             pit_reasons.append("CODE_SHA_NOT_BOUND")
-        # AnalysisHistory.created_at is currently persisted as a naive datetime.
-        pit_reasons.append("DECISION_TIMEZONE_NOT_BOUND")
+        if not decision_timezone:
+            pit_reasons.append("DECISION_TIMEZONE_NOT_BOUND")
+        if not asset_identity_hash:
+            pit_reasons.append("ASSET_IDENTITY_NOT_BOUND")
+        if not data_snapshot_identity:
+            pit_reasons.append("DATA_SNAPSHOT_IDENTITY_NOT_BOUND")
+        if not selection_source or not selection_context_hash:
+            pit_reasons.append("SELECTION_SOURCE_NOT_BOUND")
+        if (
+            available_at_max is not None
+            and decision_time is not None
+            and available_at_max > decision_time
+        ):
+            pit_reasons.append("DATA_AVAILABLE_AFTER_DECISION")
         mtf_reason = self._text(multi_timeframe.get("cross_run_persistence_reason"))
         if (
             multi_timeframe.get("cross_run_persistence_eligible") is False
             and mtf_reason
+            and not (
+                mtf_reason == "ADJUSTMENT_BASIS_NOT_PERSISTED" and adjustment_basis
+            )
             and mtf_reason not in pit_reasons
         ):
             pit_reasons.append(mtf_reason)
 
-        decision_time = history.created_at
         action = canonical_action
         strategy_version = strategy_id
         factor_contract_version = self._text(factor_decision.get("contract_version"))
@@ -136,8 +193,9 @@ class PredictionLedgerService:
         prediction_identity = {
             "schema_version": PREDICTION_LEDGER_SCHEMA_VERSION,
             "market": signal_market,
-            "stock_code": self._text(signal.get("stock_code")) or self._text(getattr(result, "code", None)),
+            "stock_code": stock_code,
             "decision_time": decision_time.isoformat(),
+            "decision_timezone": decision_timezone,
             "strategy_id": strategy_id,
             "strategy_version": strategy_version,
             "canonical_action": action,
@@ -147,6 +205,10 @@ class PredictionLedgerService:
             "evidence_hash": evidence_hash,
             "feature_schema_hash": PREDICTION_FEATURE_SCHEMA_HASH,
             "code_sha": bound_code_sha,
+            "asset_identity_hash": asset_identity_hash,
+            "data_snapshot_identity": data_snapshot_identity,
+            "selection_source": selection_source,
+            "selection_context_hash": selection_context_hash,
         }
         prediction_hash = self._sha256_text(self._canonical_json(prediction_identity))
 
@@ -160,6 +222,7 @@ class PredictionLedgerService:
             "stock_code": prediction_identity["stock_code"] or str(history.code or "").strip(),
             "instrument_type": "stock",
             "decision_time": decision_time,
+            "decision_timezone": decision_timezone,
             "data_as_of": data_as_of,
             "available_at_max": available_at_max,
             "strategy_id": strategy_id,
@@ -182,6 +245,12 @@ class PredictionLedgerService:
             "provider_identity": provider_identity,
             "adjustment_basis": adjustment_basis,
             "universe_snapshot_id": universe_snapshot_id,
+            "asset_identity_hash": asset_identity_hash,
+            "asset_identity_json": asset_identity_json,
+            "data_snapshot_identity": data_snapshot_identity,
+            "selection_source": selection_source,
+            "selection_context_hash": selection_context_hash,
+            "selection_context_json": selection_context_json,
             "pit_eligible": not pit_reasons,
             "pit_ineligibility_json": self._canonical_json(pit_reasons),
             "durability_state": "LOCAL_DB_ONLY",
@@ -287,6 +356,22 @@ class PredictionLedgerService:
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         return parsed
+
+    @staticmethod
+    def _parse_aware_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def _market_from_result(result: Any) -> Optional[str]:

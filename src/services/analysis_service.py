@@ -25,6 +25,7 @@ from src.report_language import (
 )
 from src.market_phase_summary import extract_market_phase_summary
 from src.schemas.decision_action import build_action_fields
+from src.services.pit_identity import build_specified_codes_selection_context
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     build_run_diagnostic_summary,
@@ -59,6 +60,7 @@ class AnalysisService:
         skills: Optional[List[str]] = None,
         analysis_phase: str = "auto",
         query_source: str = "api",
+        selection_source: Optional[str] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -116,6 +118,10 @@ class AnalysisService:
                 analysis_skills=skills,
                 analysis_phase=analysis_phase,
                 portfolio_context=portfolio_context,
+                research_selection_context=build_specified_codes_selection_context(
+                    raw_selection_source=selection_source,
+                    query_source=query_source,
+                ),
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

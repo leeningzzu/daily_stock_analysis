@@ -1176,6 +1176,7 @@ class PredictionLedgerRecord(Base):
     stock_code = Column(String(16), nullable=False, index=True)
     instrument_type = Column(String(16), nullable=False, default='stock', index=True)
     decision_time = Column(DateTime, nullable=False, index=True)
+    decision_timezone = Column(String(64))
     data_as_of = Column(Date, index=True)
     available_at_max = Column(DateTime, index=True)
 
@@ -1202,6 +1203,12 @@ class PredictionLedgerRecord(Base):
     provider_identity = Column(String(128))
     adjustment_basis = Column(String(32))
     universe_snapshot_id = Column(String(128), index=True)
+    asset_identity_hash = Column(String(64))
+    asset_identity_json = Column(Text)
+    data_snapshot_identity = Column(String(64))
+    selection_source = Column(String(32))
+    selection_context_hash = Column(String(64))
+    selection_context_json = Column(Text)
     pit_eligible = Column(Boolean, nullable=False, default=False, index=True)
     pit_ineligibility_json = Column(Text, nullable=False)
     durability_state = Column(String(32), nullable=False, default='LOCAL_DB_ONLY', index=True)
@@ -1213,6 +1220,83 @@ class PredictionLedgerRecord(Base):
         Index('ix_prediction_ledger_stock_time', 'market', 'stock_code', 'decision_time'),
         Index('ix_prediction_ledger_strategy_time', 'strategy_id', 'strategy_version', 'decision_time'),
         Index('ix_prediction_ledger_pit_time', 'pit_eligible', 'decision_time'),
+    )
+
+
+class PredictionOutcomeRecord(Base):
+    """Append-only terminal research outcome for one immutable prediction identity."""
+
+    __tablename__ = 'prediction_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    outcome_hash = Column(String(64), nullable=False, index=True)
+    root_identity_hash = Column(String(64), nullable=False, index=True)
+    prediction_hash = Column(String(64), nullable=False, index=True)
+    label_identity = Column(String(128), nullable=False, index=True)
+    horizon_identity = Column(String(128), nullable=False, index=True)
+    cost_identity_hash = Column(String(64), nullable=False, index=True)
+    cost_identity_json = Column(Text, nullable=False)
+    evaluation_engine_version = Column(String(64), nullable=False, index=True)
+    supersedes_outcome_hash = Column(String(64), index=True)
+    correction_reason = Column(String(128))
+    decision_session = Column(Date, index=True)
+    entry_session = Column(Date, index=True)
+    exit_session = Column(Date, index=True)
+    execution_state = Column(String(32), nullable=False, index=True)
+    entry_price = Column(Float)
+    exit_price = Column(Float)
+    gross_return_pct = Column(Float)
+    net_return_pct = Column(Float)
+    max_adverse_excursion_pct = Column(Float)
+    max_favorable_excursion_pct = Column(Float)
+    label_value = Column(Integer)
+    label_status = Column(String(32), nullable=False, index=True)
+    label_reason = Column(String(128))
+    data_snapshot_identity = Column(String(64), nullable=False, index=True)
+    provider_identity = Column(String(128))
+    adjustment_basis = Column(String(32))
+    available_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('outcome_hash', name='uix_prediction_outcome_hash'),
+        Index('ix_prediction_outcome_lineage', 'root_identity_hash', 'created_at'),
+    )
+
+
+class PITDatasetManifestRecord(Base):
+    """Immutable PIT dataset/split manifest over Ledger and Outcome identities."""
+
+    __tablename__ = 'pit_dataset_manifests'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_hash = Column(String(64), nullable=False, index=True)
+    schema_version = Column(String(64), nullable=False, index=True)
+    dataset_purpose = Column(String(128), nullable=False, index=True)
+    strategy_id = Column(String(128), nullable=False, index=True)
+    strategy_version = Column(String(64), nullable=False, index=True)
+    feature_schema_version = Column(String(64), nullable=False, index=True)
+    feature_schema_hash = Column(String(64), nullable=False, index=True)
+    label_identity = Column(String(128), nullable=False, index=True)
+    horizon_identity = Column(String(128), nullable=False, index=True)
+    cost_identity_hash = Column(String(64), nullable=False, index=True)
+    evaluation_engine_version = Column(String(64), nullable=False, index=True)
+    split_policy = Column(String(128), nullable=False, index=True)
+    purge_policy = Column(String(128), nullable=False)
+    embargo_policy = Column(String(128), nullable=False)
+    selection_route_policy = Column(String(128), nullable=False)
+    code_sha = Column(String(40), index=True)
+    final_test_state = Column(String(16), nullable=False, default='SEALED', index=True)
+    training_admission = Column(String(16), nullable=False, default='BLOCKED', index=True)
+    training_admission_reasons_json = Column(Text, nullable=False)
+    manifest_json = Column(Text, nullable=False)
+    frozen_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('dataset_hash', name='uix_pit_dataset_manifest_hash'),
+        Index('ix_pit_dataset_manifest_strategy_frozen', 'strategy_id', 'strategy_version', 'frozen_at'),
+        Index('ix_pit_dataset_manifest_admission_frozen', 'training_admission', 'frozen_at'),
     )
 
 
@@ -1419,6 +1503,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
+            self._ensure_prediction_ledger_pit_schema()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1501,6 +1586,40 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         self._ensure_decision_signal_profile_indexes()
         self._backfill_decision_signal_profile_from_metadata()
+
+    def _ensure_prediction_ledger_pit_schema(self) -> None:
+        """Add nullable PIT identity columns without guessing values for legacy rows."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(PredictionLedgerRecord.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(PredictionLedgerRecord.__tablename__)
+        }
+        expected = {
+            "decision_timezone": "VARCHAR(64)",
+            "asset_identity_hash": "VARCHAR(64)",
+            "asset_identity_json": "TEXT",
+            "data_snapshot_identity": "VARCHAR(64)",
+            "selection_source": "VARCHAR(32)",
+            "selection_context_hash": "VARCHAR(64)",
+            "selection_context_json": "TEXT",
+        }
+        for column, sql_type in expected.items():
+            if column in existing:
+                continue
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PredictionLedgerRecord.__tablename__} "
+                        f"ADD COLUMN {column} {sql_type}"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, column):
+                    raise
+            existing.add(column)
 
     def _ensure_decision_signal_profile_indexes(self) -> None:
         """Create profile-aware indexes without dropping legacy indexes."""
@@ -3316,7 +3435,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         with self.session_scope() as session:
             stmt = select(ConversationMessage).filter(
                 ConversationMessage.session_id == session_id
-            ).order_by(ConversationMessage.created_at.desc()).limit(limit)
+            ).order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc()).limit(limit)
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
@@ -3605,7 +3724,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                             ConversationMessage.role == "user",
                         )
                     )
-                    .order_by(ConversationMessage.created_at)
+                    .order_by(ConversationMessage.created_at, ConversationMessage.id)
                     .limit(1)
                 ).scalar()
                 title = (first_user_msg or "新对话")[:60]
@@ -3627,7 +3746,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stmt = (
                 select(ConversationMessage)
                 .where(ConversationMessage.session_id == session_id)
-                .order_by(ConversationMessage.created_at)
+                .order_by(ConversationMessage.created_at, ConversationMessage.id)
                 .limit(limit)
             )
             messages = session.execute(stmt).scalars().all()

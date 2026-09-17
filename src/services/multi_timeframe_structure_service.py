@@ -10,7 +10,7 @@ period is excluded unless the exchange calendar proves it complete.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from hashlib import sha256
 import json
 from typing import Any, Dict, Optional
@@ -19,6 +19,7 @@ import pandas as pd
 
 from src.core.trading_calendar import resolve_completed_timeframe_bar_date
 from src.services.price_structure_service import build_price_structure_context
+from src.services.pit_identity import build_completed_history_identity
 
 
 SCHEMA_VERSION = "multi-timeframe-structure-v1"
@@ -298,6 +299,7 @@ def build_multi_timeframe_structure_context(
     trend_analyzer: Any,
     daily_trend_result: Any = None,
     daily_price_structure_context: Any = None,
+    snapshot_observed_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Build one coverage-aware M/W/D structure carrier from completed daily bars."""
     base = {
@@ -341,6 +343,16 @@ def build_multi_timeframe_structure_context(
 
     frame = _normalize_daily_history(history, target_date=target_date)
     base["target_date"] = target_date.isoformat()
+    if not frame.empty:
+        base.update(
+            build_completed_history_identity(
+                frame,
+                stock_code=stock_code,
+                market=market,
+                target_date=target_date,
+                observed_at=snapshot_observed_at,
+            )
+        )
     if frame.empty or frame.iloc[-1]["date"] != target_date:
         reason = "COMPLETED_DAILY_HISTORY_MISSING" if frame.empty else "TARGET_DATE_BAR_MISSING"
         return {

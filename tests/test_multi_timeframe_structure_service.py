@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -197,3 +198,37 @@ def test_missing_source_and_unproven_period_fail_closed():
     assert context["source_alignment"]["status"] == "UNPROVEN"
     assert context["timeframes"]["weekly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
     assert context["timeframes"]["monthly"]["reason"] == "COMPLETED_PERIOD_UNPROVEN"
+
+
+def test_completed_history_identity_is_prefix_safe_and_changes_with_consumed_bytes():
+    prefix = _history(periods=150)
+    prefix["data_source"] = "AkshareFetcher"
+    full = _history(periods=150, future=8)
+    full["data_source"] = "AkshareFetcher"
+    target = prefix.iloc[-1]["date"].date()
+    observed_at = datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc)
+
+    kwargs = dict(
+        stock_code="600519",
+        target_date=target,
+        market="cn",
+        trend_analyzer=_FakeTrendAnalyzer(),
+        daily_trend_result=_trend_result(),
+        daily_price_structure_context={"historical_replay_eligible": True},
+        snapshot_observed_at=observed_at,
+    )
+    with patch(
+        "src.services.multi_timeframe_structure_service.resolve_completed_timeframe_bar_date",
+        return_value=None,
+    ):
+        prefix_context = build_multi_timeframe_structure_context(history=prefix, **kwargs)
+        full_context = build_multi_timeframe_structure_context(history=full, **kwargs)
+        changed = prefix.copy()
+        changed.loc[10, "close"] = float(changed.loc[10, "close"]) + 1.0
+        changed_context = build_multi_timeframe_structure_context(history=changed, **kwargs)
+
+    assert prefix_context["data_snapshot_identity"] == full_context["data_snapshot_identity"]
+    assert prefix_context["data_snapshot_identity"] != changed_context["data_snapshot_identity"]
+    assert prefix_context["provider_identity"] == "AkshareFetcher"
+    assert prefix_context["adjustment_basis"] == "qfq"
+    assert prefix_context["available_at_max"] == "2026-09-17T10:00:00"

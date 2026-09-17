@@ -81,6 +81,7 @@ from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
+from src.services.pit_identity import normalize_research_selection_context
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -256,6 +257,7 @@ class StockAnalysisPipeline:
         p0_stock_codes: Optional[List[str]] = None,
         p0_suppress_notification: bool = False,
         p0_acceptance_context: Optional[Dict[str, Any]] = None,
+        research_selection_context: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化调度器
@@ -270,6 +272,9 @@ class StockAnalysisPipeline:
         self.p0_suppress_notification = bool(p0_suppress_notification)
         self.p0_acceptance_context = (
             dict(p0_acceptance_context) if isinstance(p0_acceptance_context, dict) else {}
+        )
+        self.research_selection_context = normalize_research_selection_context(
+            research_selection_context
         )
         if self.p0_acceptance_context and not (
             self.p0_bounded_trial and self.p0_suppress_notification
@@ -698,6 +703,7 @@ class StockAnalysisPipeline:
                 price_structure_context=price_structure_context,
                 supply_demand_context=supply_demand_context,
             )
+            market_data_snapshot_observed_at = datetime.now(timezone.utc)
             multi_timeframe_structure_context = build_multi_timeframe_structure_context(
                 stock_code=code,
                 history=completed_daily_history,
@@ -706,6 +712,7 @@ class StockAnalysisPipeline:
                 trend_analyzer=self.trend_analyzer,
                 daily_trend_result=canonical_trend_result,
                 daily_price_structure_context=price_structure_context,
+                snapshot_observed_at=market_data_snapshot_observed_at,
             )
 
             if use_agent:
@@ -1009,6 +1016,9 @@ class StockAnalysisPipeline:
                         analysis_context_pack_overview=analysis_context_pack_overview,
                         market_phase_summary=market_phase_summary,
                     )
+                    context_snapshot["research_decision_time_utc"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
                     result.diagnostic_context_snapshot = context_snapshot
                     saved_history_id = self.db.save_analysis_history(
                         result=result,
@@ -1860,6 +1870,9 @@ class StockAnalysisPipeline:
                         analysis_context_pack_overview=analysis_context_pack_overview,
                         market_phase_summary=market_phase_summary,
                     )
+                    agent_context_snapshot["research_decision_time_utc"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
                     saved_history_id = self.db.save_analysis_history(
@@ -2986,6 +2999,7 @@ class StockAnalysisPipeline:
                 analysis_history_id=analysis_history_id,
                 result=result,
                 decision_signal=decision_signal,
+                selection_context=getattr(self, "research_selection_context", None),
             )
         except Exception as exc:
             logger.warning(

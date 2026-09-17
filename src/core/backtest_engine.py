@@ -21,6 +21,7 @@ class DailyBarLike(Protocol):
     """Protocol for objects representing a daily OHLC bar."""
 
     date: date
+    open: Optional[float]
     high: Optional[float]
     low: Optional[float]
     close: Optional[float]
@@ -364,6 +365,86 @@ class BacktestEngine:
         }
 
     @classmethod
+    def evaluate_fixed_horizon_take(
+        cls,
+        *,
+        forward_bars: Sequence[DailyBarLike],
+        cost_identity: Dict[str, Any],
+        eval_window_days: int = 3,
+    ) -> Dict[str, Any]:
+        """Evaluate next-open -> fixed-close payoff with explicit injected costs."""
+        days = int(eval_window_days)
+        if days <= 0:
+            raise ValueError("eval_window_days must be positive")
+        if len(forward_bars) < days:
+            return {"eval_status": "unmatured", "required_forward_sessions": days}
+
+        window = list(forward_bars[:days])
+        entry_reference = cls._finite_optional_float(getattr(window[0], "open", None))
+        exit_reference = cls._finite_optional_float(getattr(window[-1], "close", None))
+        if entry_reference is None or entry_reference <= 0:
+            return {
+                "eval_status": "unlabelable",
+                "execution_state": "EXECUTION_UNKNOWN",
+                "unable_reason": "invalid_entry_open",
+                "entry_session": window[0].date,
+                "exit_session": window[-1].date,
+            }
+        if exit_reference is None or exit_reference <= 0:
+            return {
+                "eval_status": "unlabelable",
+                "execution_state": "SIMULATED_FILLED",
+                "unable_reason": "invalid_exit_close",
+                "entry_session": window[0].date,
+                "exit_session": window[-1].date,
+                "entry_price": entry_reference,
+            }
+
+        buy_fee = cls._non_negative_cost(cost_identity, "buy_fee_rate")
+        sell_fee = cls._non_negative_cost(cost_identity, "sell_fee_rate")
+        sell_tax = cls._non_negative_cost(cost_identity, "sell_tax_rate")
+        other_buy = cls._non_negative_cost(cost_identity, "other_buy_rate")
+        other_sell = cls._non_negative_cost(cost_identity, "other_sell_rate")
+        buy_slip = cls._non_negative_cost(cost_identity, "buy_slippage_bps") / 10_000.0
+        sell_slip = cls._non_negative_cost(cost_identity, "sell_slippage_bps") / 10_000.0
+
+        executed_entry = entry_reference * (1.0 + buy_slip)
+        executed_exit = exit_reference * (1.0 - sell_slip)
+        buy_cash = executed_entry * (1.0 + buy_fee + other_buy)
+        sell_cash = executed_exit * (1.0 - sell_fee - sell_tax - other_sell)
+        gross_return_pct = (exit_reference - entry_reference) / entry_reference * 100.0
+        net_return_pct = (sell_cash - buy_cash) / buy_cash * 100.0
+
+        lows = [cls._finite_optional_float(getattr(bar, "low", None)) for bar in window]
+        highs = [cls._finite_optional_float(getattr(bar, "high", None)) for bar in window]
+        valid_lows = [value for value in lows if value is not None]
+        valid_highs = [value for value in highs if value is not None]
+        mae = (
+            (min(valid_lows) - entry_reference) / entry_reference * 100.0
+            if valid_lows
+            else None
+        )
+        mfe = (
+            (max(valid_highs) - entry_reference) / entry_reference * 100.0
+            if valid_highs
+            else None
+        )
+        return {
+            "eval_status": "completed",
+            "execution_state": "SIMULATED_FILLED",
+            "entry_session": window[0].date,
+            "exit_session": window[-1].date,
+            "entry_reference_price": entry_reference,
+            "exit_reference_price": exit_reference,
+            "entry_price": executed_entry,
+            "exit_price": executed_exit,
+            "gross_return_pct": gross_return_pct,
+            "net_return_pct": net_return_pct,
+            "max_adverse_excursion_pct": mae,
+            "max_favorable_excursion_pct": mfe,
+        }
+
+    @classmethod
     def compute_summary(
         cls,
         *,
@@ -683,6 +764,13 @@ class BacktestEngine:
         except (TypeError, ValueError):
             return None
         return number if math.isfinite(number) else None
+
+    @classmethod
+    def _non_negative_cost(cls, payload: Dict[str, Any], key: str) -> float:
+        value = cls._finite_optional_float(payload.get(key))
+        if value is None or value < 0:
+            raise ValueError(f"invalid cost identity field: {key}")
+        return value
 
     @classmethod
     def _evaluate_targets(

@@ -90,6 +90,28 @@ MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history �
 - 当前持久化状态固定为 `LOCAL_DB_ONLY`；GitHub-hosted runner 本地 SQLite 仍不能冒充跨运行 Prediction Ledger。R2/Parquet/Secret、PIT Dataset 和模型训练必须经过独立 admission。
 - 现有 `DecisionSignalOutcomeService` / `SkillOpinionOutcomeService` 继续作为 outcome evaluator owner；V1 不复制 evaluator。后续要进入正式 PIT Dataset 时，terminal outcome correction 必须使用追加式版本记录，而不是 `force` 覆盖训练证据。
 
+### Prediction Ledger V2 / PredictionOutcome PIT foundation
+
+PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增第二数据库、第二 scheduler 或用户可见交易 API。`prediction_ledger` 仍是唯一 prediction snapshot owner；V2 只追加 nullable、向后兼容的研究身份列，legacy 行不会被猜测回填：`decision_timezone`、版本化 asset identity hash/json、实际 consumed completed-history `data_snapshot_identity`，以及独立于 UI request origin 的 research `selection_source / selection_context`。
+
+- A 股首个 asset identity 固定记录标准化代码、SH/SZ/BJ exchange、`XSHG`、`Asia/Shanghai` 与 `CNY`。完整 D/W/M technical evidence 的 data snapshot hash 由同一 `multi_timeframe_structure_service` 对实际消费的 completed daily-history prefix 生成；单根 daily-bar identity 不能替代 full-history identity。
+- adjustment basis 只在 exact provider route 能证明时绑定。当前 AkShare A-share history route 与 direct `TencentFetcher` 明确请求 `qfq`；其他来源仍保持 unproven，不做“CN 默认前复权”的推断。
+- research route 只区分 `AUTO_SCREEN` 与 `SPECIFIED_CODES`。`manual/autocomplete/import/image` 仍只是 API/UI request origin；AUTO_SCREEN 复用现有 screening provenance，但 `run_id` 不冒充 immutable universe snapshot。首个 asset-level Meta-filter dataset 不把 universe membership 设为普遍前置，只有未来 AUTO_SCREEN selection-efficacy 研究才要求完整 universe identity。
+- `PredictionOutcome` 是同库 append-only research sidecar，不替换现有 operational `DecisionSignalOutcome`。因为 canonical `WAIT` 对应 public `watch`，而现有 directional outcome service 会把 `watch` 视为 non-directional，所以 research outcome 由薄 `PredictionOutcomeService` 直接复用既有 `BacktestEngine + StockRepository` primitives。
+- 第一主标签保持 `META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1`：盘后 prediction 的最早标准化 entry 是下一交易日 open，第三个 forward session close 固定退出；主标签不使用 dynamic stop/take。cost identity 必须显式注入，缺失不能默认为零成本；仓库不内置本项目尚未 currentness 核验/批准的 A 股 fee/tax/slippage 数值。
+- terminal research outcome 不原地改写：exact replay idempotent；同 engine/data correction 追加新行并显式 `supersedes_outcome_hash + correction_reason`；engine version 变化创建独立 lineage；普通 AnalysisHistory cleanup 不删除 Ledger/PredictionOutcome research rows。
+- 这些身份列/sidecar 仍不等于“历史 PIT 数据已经具备”。`LOCAL_DB_ONLY`、历史 provider vintage、durable referenced bytes 与正式 numeric cost identity 等 gate 继续独立阻止 unattended training。
+
+### PIT Dataset manifest foundation
+
+首个 PIT Dataset 不复制 Prediction Ledger feature rows 或 PredictionOutcome label rows，而是在同一 DSA SQLite 中追加 immutable `PITDatasetManifestRecord`，只绑定它们的不可变身份、split assignment、purge/exclusion reason 与训练准入状态。首个 purpose 固定为 `ASSET_LEVEL_META_FILTER_ON_SELECTED_OPPORTUNITIES_V1`，只消费 `stock_trend_quality_pullback_v1` 的 `WAIT + PROVEN + hard_veto=false` 白盒机会。
+
+- split 固定为 `XSHG_SESSION_GROUPED_CHRONO_60_20_20_PURGED_V1`：按 `data_as_of` 的 XSHG decision session 分组，最早 60% 为 TRAIN、随后 20% 为 VALIDATION、最新 20% 为 FINAL_TEST；同 session 不跨 fold，禁止 random shuffle。
+- TRAIN/VALIDATION 只绑定各自下一个 block cutoff 之前已经 `available_at` 可知的 effective Outcome correction，并要求 label exit session 严格早于下一个 block 的首个 session；越界或晚到 correction 记录 purge reason，不移动边界来改善结果。
+- FINAL_TEST 永久以 `SEALED` 状态写入 manifest。assignment 只记录 prediction/outcome/data identity 与可审计时间边界，不复制 `label_value`、收益或命中结果，避免开发 consumer 从 manifest 直接读取测试集答案。
+- AUTO_SCREEN / SPECIFIED_CODES 保留独立 selection route；当前 asset-level Meta-filter purpose 不要求完整 universe snapshot，只有未来 selection-efficacy purpose 才需要 immutable universe membership。
+- 当前 `LOCAL_DB_ONLY`、durable referenced bytes 未准入、正式 numeric cost identity 未批准、PIT gap 或任一 split 在合法 purge 后为空，都使 `TRAINING_ADMISSION=BLOCKED`。manifest foundation 不等于已经允许训练、校准或打开 FINAL_TEST。
+
 ## API
 
 当前公开接口由 `api/v1/endpoints/decision_signals.py` 和 `docs/architecture/api_spec.json` 描述：

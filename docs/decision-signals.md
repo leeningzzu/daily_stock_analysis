@@ -79,6 +79,17 @@ MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history �
 - 新的相反 active 信号只会把同 profile 的旧 active 信号标记为 `invalidated`，并把失效来源写入 metadata。不同非 `NULL` profile 可并存，即使 action 相反。
 - Expired duplicate refresh 不会改写 `decision_profile`，只能刷新同 profile 记录。
 
+## Prediction Ledger V1（研究基础）
+
+`Prediction Ledger V1` 复用现有 `AnalysisHistory → DecisionSignal` 写入链，在分析历史成功保存后追加一条低敏、append-only 的确定性预测快照；它不是第二数据库、第二决策引擎或新的用户可见信号 API。
+
+- 只消费当前 `dashboard.factor_decision` 的结构化证据族、已存在的 `canonical_decision.action`、DecisionSignal 身份/计划字段和来源时间；canonical decision、signal id、market 或 horizon 任一缺失都不落账，不允许把普通 signal action 冒充 canonical decision；也不把 `investor_brief`、LLM reasoning 或整份 `raw_result/context_snapshot` 当训练特征复制入账本。
+- `prediction_hash`、`evidence_hash`、`feature_schema_hash` 使用稳定 canonical JSON + SHA-256；同内容重放 `ON CONFLICT DO NOTHING`，证据变化产生新行，既有行不 refresh。
+- `analysis_history_id` / `decision_signal_id` 是弱引用。普通历史清理可以删除报告/信号生命周期数据，但不得级联删除已冻结的 Prediction Ledger 行。
+- 当前 `AnalysisHistory.created_at` 仍是 naive datetime，行情 `available_at`、`adjustment_basis`、universe snapshot 与跨运行 durable store 也尚未完整绑定，因此 V1 会把这些缺口写入 `pit_ineligibility_reasons`，默认不能进入训练集。
+- 当前持久化状态固定为 `LOCAL_DB_ONLY`；GitHub-hosted runner 本地 SQLite 仍不能冒充跨运行 Prediction Ledger。R2/Parquet/Secret、PIT Dataset 和模型训练必须经过独立 admission。
+- 现有 `DecisionSignalOutcomeService` / `SkillOpinionOutcomeService` 继续作为 outcome evaluator owner；V1 不复制 evaluator。后续要进入正式 PIT Dataset 时，terminal outcome correction 必须使用追加式版本记录，而不是 `force` 覆盖训练证据。
+
 ## API
 
 当前公开接口由 `api/v1/endpoints/decision_signals.py` 和 `docs/architecture/api_spec.json` 描述：

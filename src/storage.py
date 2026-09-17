@@ -1158,6 +1158,64 @@ class DecisionSignalFeedbackRecord(Base):
     updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
 
 
+class PredictionLedgerRecord(Base):
+    """Append-only deterministic prediction snapshot for later PIT research."""
+
+    __tablename__ = 'prediction_ledger'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prediction_hash = Column(String(64), nullable=False, index=True)
+    schema_version = Column(String(32), nullable=False, index=True)
+
+    # Weak references by design: a ledger row must survive report/signal lifecycle cleanup.
+    analysis_history_id = Column(Integer, nullable=False, index=True)
+    decision_signal_id = Column(Integer, index=True)
+    trace_id = Column(String(64), index=True)
+
+    market = Column(String(8), nullable=False, index=True)
+    stock_code = Column(String(16), nullable=False, index=True)
+    instrument_type = Column(String(16), nullable=False, default='stock', index=True)
+    decision_time = Column(DateTime, nullable=False, index=True)
+    data_as_of = Column(Date, index=True)
+    available_at_max = Column(DateTime, index=True)
+
+    strategy_id = Column(String(128), nullable=False, index=True)
+    strategy_version = Column(String(64), nullable=False, index=True)
+    factor_contract_version = Column(String(32), index=True)
+    canonical_action = Column(String(16), index=True)
+    horizon = Column(String(16), index=True)
+    decision_profile = Column(String(16), index=True)
+    trigger_source = Column(String(64), index=True)
+    source_type = Column(String(32), index=True)
+
+    entry_low = Column(Float)
+    entry_high = Column(Float)
+    stop_loss = Column(Float)
+    target_price = Column(Float)
+
+    feature_schema_version = Column(String(64), nullable=False, index=True)
+    feature_schema_hash = Column(String(64), nullable=False, index=True)
+    evidence_hash = Column(String(64), nullable=False, index=True)
+    evidence_json = Column(Text, nullable=False)
+
+    code_sha = Column(String(40), index=True)
+    provider_identity = Column(String(128))
+    adjustment_basis = Column(String(32))
+    universe_snapshot_id = Column(String(128), index=True)
+    pit_eligible = Column(Boolean, nullable=False, default=False, index=True)
+    pit_ineligibility_json = Column(Text, nullable=False)
+    durability_state = Column(String(32), nullable=False, default='LOCAL_DB_ONLY', index=True)
+
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('prediction_hash', name='uix_prediction_ledger_hash'),
+        Index('ix_prediction_ledger_stock_time', 'market', 'stock_code', 'decision_time'),
+        Index('ix_prediction_ledger_strategy_time', 'strategy_id', 'strategy_version', 'decision_time'),
+        Index('ix_prediction_ledger_pit_time', 'pit_eligible', 'decision_time'),
+    )
+
+
 class SkillOpinionSampleRecord(Base):
     """Immutable, low-sensitivity skill opinion sample for Issue #1904 P2 PR1."""
 

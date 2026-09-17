@@ -1031,13 +1031,18 @@ class StockAnalysisPipeline:
                         ),
                     )
                     if valid_saved_history_id:
-                        self._extract_decision_signal_after_history_save(
+                        decision_signal_result = self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
                             source_report_id=saved_history_id,
                             report_type=report_type.value,
                             context_snapshot=context_snapshot,
                             portfolio_context=portfolio_context,
+                        )
+                        self._persist_prediction_ledger_after_history_save(
+                            result=result,
+                            analysis_history_id=saved_history_id,
+                            decision_signal=decision_signal_result,
                         )
                 except Exception as e:
                     record_history_run(
@@ -1884,13 +1889,18 @@ class StockAnalysisPipeline:
                             stock_code=code,
                             analysis_context_pack_overview=analysis_context_pack_overview,
                         )
-                        self._extract_decision_signal_after_history_save(
+                        decision_signal_result = self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
                             source_report_id=saved_history_id,
                             report_type=report_type.value,
                             context_snapshot=agent_context_snapshot,
                             portfolio_context=portfolio_context,
+                        )
+                        self._persist_prediction_ledger_after_history_save(
+                            result=result,
+                            analysis_history_id=saved_history_id,
+                            decision_signal=decision_signal_result,
                         )
                     latest_diagnostic_snapshot = current_diagnostic_snapshot()
                     if latest_diagnostic_snapshot is not None:
@@ -2919,7 +2929,7 @@ class StockAnalysisPipeline:
         report_type: str,
         context_snapshot: Dict[str, Any],
         portfolio_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         """Best-effort DecisionSignal extraction after analysis history is saved."""
 
         assert (
@@ -2949,6 +2959,8 @@ class StockAnalysisPipeline:
                 summary = summarize_decision_signal(signal_result.get("item"))
                 if summary:
                     setattr(result, "decision_signal_summary", summary)
+                return signal_result
+            return None
         except Exception as exc:
             logger.warning(
                 "Decision signal extraction skipped after history save: query_id=%s stock_code=%s error=%s",
@@ -2956,6 +2968,32 @@ class StockAnalysisPipeline:
                 getattr(result, "code", None),
                 exc,
                 exc_info=True,
+            )
+            return None
+
+    def _persist_prediction_ledger_after_history_save(
+        self,
+        *,
+        result: AnalysisResult,
+        analysis_history_id: int,
+        decision_signal: Optional[Dict[str, Any]],
+    ) -> None:
+        """Best-effort append-only snapshot for later PIT/outcome research."""
+        try:
+            from src.services.prediction_ledger_service import PredictionLedgerService
+
+            PredictionLedgerService(db_manager=self.db).persist(
+                analysis_history_id=analysis_history_id,
+                result=result,
+                decision_signal=decision_signal,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Prediction ledger snapshot skipped after history save: "
+                "history_id=%s stock_code=%s error_type=%s",
+                analysis_history_id,
+                getattr(result, "code", None),
+                type(exc).__name__,
             )
 
     @staticmethod

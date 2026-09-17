@@ -302,6 +302,51 @@ def resolve_historical_daily_bar_date(
         return None
 
 
+def resolve_completed_timeframe_bar_date(
+    market: Optional[str],
+    target_date: date,
+    timeframe: str,
+) -> Optional[date]:
+    """Resolve the latest completed weekly/monthly bar end at ``target_date``.
+
+    The daily completed-bar owner remains authoritative. This helper only
+    projects that completed daily session onto a higher-timeframe boundary and
+    fails closed when the exchange calendar cannot prove the boundary.
+    """
+    normalized = str(timeframe or "").strip().lower()
+    period_freq = {
+        "1w": "W-FRI",
+        "weekly": "W-FRI",
+        "1mo": "M",
+        "monthly": "M",
+    }.get(normalized)
+    if period_freq is None or market not in MARKET_EXCHANGE or not _XCALS_AVAILABLE:
+        return None
+
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        if not bool(cal.is_session(target_date)):
+            return None
+        session = cal.date_to_session(target_date, direction="previous")
+        current_period = pd.Timestamp(target_date).to_period(period_freq)
+        next_session = cal.next_session(session)
+        next_period = pd.Timestamp(next_session.date()).to_period(period_freq)
+        if next_period != current_period:
+            return target_date
+
+        first_current_session = cal.date_to_session(
+            current_period.start_time.date(), direction="next"
+        )
+        previous_session = cal.previous_session(first_current_session)
+        return previous_session.date()
+    except Exception as e:
+        logger.warning(
+            "trading_calendar.resolve_completed_timeframe_bar_date fail-closed: %s",
+            e,
+        )
+        return None
+
+
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:
     """
     Convert exchange-calendar timestamps into market-local datetimes.

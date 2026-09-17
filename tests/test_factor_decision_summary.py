@@ -762,3 +762,50 @@ def test_lower_timeframe_schema_cannot_override_higher_level_canonical_veto():
         "summary": "低周期转强，仅作时点。",
     }
     assert summary["canonical_decision"]["action"] == "PASS"
+
+
+def test_multi_timeframe_context_fills_existing_brief_seam_without_inventing_intraday():
+    trend = _AssetBriefPayloadNamespace(
+        current_price=10.5,
+        support_levels=[10.0],
+        resistance_levels=[11.0],
+    )
+    summary = {
+        "sections": {
+            "trend": "趋势：日线均线结构偏强",
+            "volume_price": "量价：量能正常",
+        },
+        "conclusion": "保持观察。",
+        "multi_timeframe_structure_context": {
+            "timeframes": {
+                "monthly": {
+                    "status": "MISSING",
+                    "reason": "WARMUP_INSUFFICIENT",
+                    "role": "LONG_TERM_CONTEXT",
+                    "summary": None,
+                },
+                "weekly": {
+                    "status": "READY",
+                    "reason": "TIMEFRAME_READY",
+                    "role": "PRIMARY_TREND_CONTEXT",
+                    "summary": "周线多头排列 MA5>MA10>MA20；量能正常",
+                },
+                "60m": {
+                    "status": "MISSING",
+                    "reason": "INTRADAY_COMPLETED_BAR_CONTRACT_NOT_READY",
+                    "role": "OPTIONAL_BRIDGE",
+                    "summary": None,
+                },
+            }
+        },
+    }
+
+    brief = _asset_brief_payload_builder(trend, summary)
+    assert brief["coverage"]["weekly"] == "READY"
+    assert brief["coverage"]["monthly"] == "MISSING"
+    assert brief["timeframe_thesis"]["weekly"]["summary"].startswith(
+        "周线多头排列"
+    )
+    assert brief["timeframe_thesis"]["monthly"]["summary"] is None
+    assert brief["short_term_execution_panel"]["status"] == "MISSING"
+    assert "MISSING" not in brief["coverage_text"]

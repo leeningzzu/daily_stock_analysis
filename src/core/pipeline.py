@@ -80,6 +80,7 @@ from src.services.cost_structure_service import build_cost_structure_context
 from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
+from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -116,6 +117,11 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+# Selected-asset deep analysis uses enough completed daily history to form
+# at least 26 completed monthly bars with a calendar buffer.  This remains
+# on-demand data loading; it is not a durable market-data store.
+DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS = 1100
 
 
 class P0BoundedTrialError(RuntimeError):
@@ -436,7 +442,12 @@ class StockAnalysisPipeline:
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            df, source_name = self.fetcher_manager.get_daily_data(code, days=120)
+            history_start = target_date - timedelta(days=DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS)
+            df, source_name = self.fetcher_manager.get_daily_data(
+                code,
+                start_date=history_start.isoformat(),
+                end_date=target_date.isoformat(),
+            )
 
             if df is None or df.empty:
                 return False, "获取数据为空"
@@ -620,7 +631,7 @@ class StockAnalysisPipeline:
                 _mkt = get_market_for_stock(normalize_stock_code(code))
                 frozen = get_frozen_target_date()
                 end_date = frozen if frozen else daily_market_target_date
-                start_date = end_date - timedelta(days=200)
+                start_date = end_date - timedelta(days=DEEP_HISTORY_LOOKBACK_CALENDAR_DAYS)
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
                     completed_daily_history = pd.DataFrame([bar.to_dict() for bar in historical_bars])
@@ -687,6 +698,15 @@ class StockAnalysisPipeline:
                 price_structure_context=price_structure_context,
                 supply_demand_context=supply_demand_context,
             )
+            multi_timeframe_structure_context = build_multi_timeframe_structure_context(
+                stock_code=code,
+                history=completed_daily_history,
+                target_date=daily_market_target_date,
+                market=market,
+                trend_analyzer=self.trend_analyzer,
+                daily_trend_result=canonical_trend_result,
+                daily_price_structure_context=price_structure_context,
+            )
 
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
@@ -712,6 +732,7 @@ class StockAnalysisPipeline:
                     price_structure_context=price_structure_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
+                    multi_timeframe_structure_context=multi_timeframe_structure_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -968,6 +989,7 @@ class StockAnalysisPipeline:
                     price_structure_context=price_structure_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
+                    multi_timeframe_structure_context=multi_timeframe_structure_context,
                 )
                 self._promote_p0_deterministic_result_after_explanation_failure(
                     result,
@@ -1469,6 +1491,7 @@ class StockAnalysisPipeline:
         price_structure_context: Optional[Dict[str, Any]] = None,
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
+        multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1790,6 +1813,7 @@ class StockAnalysisPipeline:
                     price_structure_context=price_structure_context,
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
+                    multi_timeframe_structure_context=multi_timeframe_structure_context,
                 )
 
             resolved_stock_name = result.name if result and result.name else stock_name
@@ -2279,6 +2303,7 @@ class StockAnalysisPipeline:
         price_structure_context: Optional[Dict[str, Any]] = None,
         volatility_momentum_context: Optional[Dict[str, Any]] = None,
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
+        multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Attach the factor summary and, in P0, finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
@@ -2313,6 +2338,7 @@ class StockAnalysisPipeline:
                 price_structure_context=price_structure_context,
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
+                multi_timeframe_structure_context=multi_timeframe_structure_context,
                 include_canonical=self.p0_bounded_trial,
             )
         except Exception as exc:

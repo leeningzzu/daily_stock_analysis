@@ -53,6 +53,13 @@ class _FakeCalendar:
             raise ValueError("no previous session")
         return pd.Timestamp(self._sessions[index - 1])
 
+    def next_session(self, session: pd.Timestamp) -> pd.Timestamp:
+        session_date = session.date()
+        index = self._sessions.index(session_date)
+        if index + 1 >= len(self._sessions):
+            raise ValueError("no next session")
+        return pd.Timestamp(self._sessions[index + 1])
+
     def session_open(self, session: pd.Timestamp) -> pd.Timestamp:
         local_open = datetime.combine(
             session.date(),
@@ -193,6 +200,46 @@ class HistoricalDailyBarDateTestCase(unittest.TestCase):
         for phase in (None, "unknown", "postmarket"):
             with self.subTest(phase=phase):
                 self.assertIsNone(self._resolve(date(2024, 1, 7), phase))
+
+
+class CompletedTimeframeBarDateTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calendar = _FakeCalendar(
+            sessions=[
+                date(2024, 1, 26),
+                date(2024, 1, 29),
+                date(2024, 1, 30),
+                date(2024, 1, 31),
+                date(2024, 2, 1),
+                date(2024, 2, 2),
+                date(2024, 2, 5),
+            ],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+
+    def _resolve(self, target_date: date, timeframe: str) -> Optional[date]:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(self.calendar),
+            create=True,
+        ):
+            return trading_calendar.resolve_completed_timeframe_bar_date(
+                "cn", target_date, timeframe
+            )
+
+    def test_weekly_uses_prior_week_until_last_session_then_current_week(self):
+        self.assertEqual(self._resolve(date(2024, 1, 31), "1w"), date(2024, 1, 26))
+        self.assertEqual(self._resolve(date(2024, 2, 2), "1w"), date(2024, 2, 2))
+
+    def test_monthly_uses_current_month_only_after_month_boundary_is_proven(self):
+        self.assertEqual(self._resolve(date(2024, 1, 31), "1mo"), date(2024, 1, 31))
+        self.assertEqual(self._resolve(date(2024, 2, 2), "1mo"), date(2024, 1, 31))
+
+    def test_unknown_timeframe_and_non_session_fail_closed(self):
+        self.assertIsNone(self._resolve(date(2024, 2, 2), "30m"))
+        self.assertIsNone(self._resolve(date(2024, 2, 3), "1w"))
 
 
 class EffectiveTradingDateTestCase(unittest.TestCase):

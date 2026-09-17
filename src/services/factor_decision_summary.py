@@ -1120,6 +1120,24 @@ def _asset_brief_v1_usable(value):
     return not any(blocker in text for blocker in blockers)
 
 
+def _brief_timeframe_projection(mtf_context, key, role):
+    timeframes = _mapping(_mapping(mtf_context).get("timeframes"))
+    item = _mapping(timeframes.get(key))
+    raw_status = str(item.get("status") or "MISSING").strip().upper()
+    if raw_status == "READY":
+        status = "READY"
+    elif raw_status == "PARTIAL":
+        status = "PARTIAL_CURRENT"
+    else:
+        status = "MISSING"
+    summary_text = str(item.get("summary") or "").strip() or None
+    return {
+        "status": status,
+        "role": str(item.get("role") or role),
+        "summary": summary_text if status in {"READY", "PARTIAL_CURRENT"} else None,
+    }
+
+
 def _build_asset_research_brief_v1(trend_result, summary):
     summary = summary if isinstance(summary, dict) else {}
     sections = summary.get("sections")
@@ -1218,6 +1236,43 @@ def _build_asset_research_brief_v1(trend_result, summary):
     ]
     daily_thesis = "\uff1b".join(daily_components[:3]) or None
 
+    mtf_context = _mapping(summary.get("multi_timeframe_structure_context"))
+    monthly_thesis = _brief_timeframe_projection(mtf_context, "monthly", "LONG_TERM_CONTEXT")
+    weekly_thesis = _brief_timeframe_projection(mtf_context, "weekly", "PRIMARY_TREND_CONTEXT")
+    bridge_thesis = _brief_timeframe_projection(mtf_context, "60m", "OPTIONAL_BRIDGE")
+    if not mtf_context:
+        monthly_thesis = {"status": "MISSING", "role": "LONG_TERM_CONTEXT", "summary": None}
+        weekly_thesis = {"status": "MISSING", "role": "PRIMARY_TREND_CONTEXT", "summary": None}
+        bridge_thesis = {"status": "MISSING", "role": "OPTIONAL_BRIDGE", "summary": None}
+
+    coverage = {
+        "monthly": monthly_thesis["status"],
+        "weekly": weekly_thesis["status"],
+        "daily": "PARTIAL_CURRENT",
+        "60m": bridge_thesis["status"],
+        "30m": "MISSING",
+        "15m": "MISSING",
+        "5m": "MISSING",
+    }
+    if mtf_context:
+        ready_labels = []
+        if monthly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
+            ready_labels.append("月线")
+        if weekly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
+            ready_labels.append("周线")
+        ready_labels.append("日线")
+        coverage_text = (
+            f"当前证据覆盖：{'、'.join(ready_labels)}已进入确定性分析；"
+            "未就绪的高周期保持数据不足，60分钟、30分钟、15分钟和5分钟"
+            "尚未进入生产判断。"
+        )
+    else:
+        coverage_text = (
+            "\u5f53\u524d\u8bc1\u636e\u8986\u76d6\uff1a\u65e5\u7ebf\u5df2\u5206\u6790\uff1b"
+            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u300130\u5206\u949f\u300115\u5206\u949f\u548c5\u5206\u949f"
+            "\u5c1a\u672a\u8fdb\u5165\u751f\u4ea7\u5224\u65ad\u3002"
+        )
+
     paragraph = "\uff1b".join(clauses[:4]).strip()
     if paragraph:
         paragraph += "\u3002"
@@ -1227,29 +1282,17 @@ def _build_asset_research_brief_v1(trend_result, summary):
         "schema_version": "investor-brief-v1",
         "report_mode": "ASSET_RESEARCH_BRIEF",
         "report_version": "asset-research-brief-v1",
-        "coverage": {
-            "monthly": "MISSING",
-            "weekly": "MISSING",
-            "daily": "PARTIAL_CURRENT",
-            "60m": "MISSING",
-            "30m": "MISSING",
-            "15m": "MISSING",
-            "5m": "MISSING",
-        },
-        "coverage_text": (
-            "\u5f53\u524d\u8bc1\u636e\u8986\u76d6\uff1a\u65e5\u7ebf\u5df2\u5206\u6790\uff1b"
-            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u300130\u5206\u949f\u300115\u5206\u949f\u548c5\u5206\u949f"
-            "\u5c1a\u672a\u8fdb\u5165\u751f\u4ea7\u5224\u65ad\u3002"
-        ),
+        "coverage": coverage,
+        "coverage_text": coverage_text,
         "timeframe_thesis": {
-            "monthly": {"status": "MISSING", "role": "LONG_TERM_CONTEXT", "summary": None},
-            "weekly": {"status": "MISSING", "role": "PRIMARY_TREND_CONTEXT", "summary": None},
+            "monthly": monthly_thesis,
+            "weekly": weekly_thesis,
             "daily": {
                 "status": "PARTIAL_CURRENT",
                 "role": "PRIMARY_SETUP",
                 "summary": daily_thesis,
             },
-            "60m": {"status": "MISSING", "role": "OPTIONAL_BRIDGE", "summary": None},
+            "60m": bridge_thesis,
         },
         "short_term_execution_panel": {
             "status": "MISSING",
@@ -1331,6 +1374,7 @@ def build_stock_factor_decision_summary(
     price_structure_context: Optional[Dict[str, Any]] = None,
     volatility_momentum_context: Optional[Dict[str, Any]] = None,
     pattern_trigger_context: Optional[Dict[str, Any]] = None,
+    multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
@@ -1456,6 +1500,8 @@ def build_stock_factor_decision_summary(
         "volatility_momentum_evidence": volatility_momentum_evidence,
         "pattern_trigger_evidence": pattern_trigger_evidence,
     }
+    if isinstance(multi_timeframe_structure_context, dict):
+        summary["multi_timeframe_structure_context"] = dict(multi_timeframe_structure_context)
     if canonical_decision is not None:
         summary["canonical_decision"] = canonical_decision
     summary["investor_brief"] = _build_asset_research_brief_v1(

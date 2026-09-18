@@ -57,6 +57,7 @@ class PITDatasetService:
         cost_identity_hash: str,
         cost_identity_approved: bool = False,
         durable_references_admitted: bool = False,
+        execution_realism_approved: bool = False,
     ) -> Dict[str, Any]:
         cost_hash = str(cost_identity_hash or "").strip().lower()
         if len(cost_hash) != 64 or any(ch not in "0123456789abcdef" for ch in cost_hash):
@@ -189,6 +190,8 @@ class PITDatasetService:
             admission_reasons.append("DURABLE_REFERENCES_NOT_ADMITTED")
         if not cost_identity_approved:
             admission_reasons.append("COST_IDENTITY_NOT_APPROVED")
+        if not execution_realism_approved:
+            admission_reasons.append("EXECUTION_REALISM_NOT_APPROVED")
         if code_sha is None:
             admission_reasons.append("UNIFORM_CODE_SHA_NOT_BOUND")
         if not train_sessions or not validation_sessions or not final_sessions:

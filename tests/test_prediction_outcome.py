@@ -10,8 +10,12 @@ from datetime import date, datetime
 import pytest
 
 from src.config import Config
+from src.core.backtest_engine import BacktestEngine
 from src.repositories.prediction_outcome_repo import PredictionOutcomeRepository
-from src.services.prediction_outcome_service import PredictionOutcomeService
+from src.services.prediction_outcome_service import (
+    PREDICTION_OUTCOME_ENGINE_VERSION,
+    PredictionOutcomeService,
+)
 from src.storage import (
     AnalysisHistory,
     DatabaseManager,
@@ -41,14 +45,18 @@ def isolated_db(tmp_path):
 
 def _cost_identity() -> dict:
     return {
+        "schema_version": "cost-identity-v2",
         "market": "cn",
         "instrument_type": "stock",
+        "exchange": "SH",
         "currency": "CNY",
-        "effective_date": "TEST_ONLY",
+        "effective_from": "2026-01-01",
+        "effective_to": "2026-12-31",
         "source": "unit-test-fixture",
-        "version": "test-v1",
+        "version": "test-v2",
         "cost_model_mode": "synthetic-test-only",
-        "minimum_fee_policy": "NOT_MODELED_TEST_ONLY",
+        "commission_basis": "ALL_IN_INCLUDES_EXCHANGE_HANDLING_AND_REGULATORY_LEVY_OTHER_IS_TRANSFER_ONLY",
+        "minimum_fee_policy": "PER_SIDE_MAX_NOTIONAL_RATE_OR_MINIMUM_CNY",
         "buy_fee_rate": 0.0,
         "sell_fee_rate": 0.0,
         "sell_tax_rate": 0.0,
@@ -56,6 +64,8 @@ def _cost_identity() -> dict:
         "other_sell_rate": 0.0,
         "buy_slippage_bps": 0.0,
         "sell_slippage_bps": 0.0,
+        "minimum_commission_cny": 0.0,
+        "reference_entry_notional_cny": 100_000.0,
     }
 
 
@@ -100,6 +110,20 @@ def _seed_prediction(
             feature_schema_hash="b" * 64,
             evidence_hash="c" * 64,
             evidence_json=evidence_json,
+            asset_identity_hash="d" * 64,
+            asset_identity_json=json.dumps(
+                {
+                    "version": "cn-stock-asset-v1",
+                    "market": "cn",
+                    "instrument_type": "stock",
+                    "symbol": "600519",
+                    "exchange": "SH",
+                    "calendar": "XSHG",
+                    "timezone": "Asia/Shanghai",
+                    "currency": "CNY",
+                },
+                sort_keys=True,
+            ),
             pit_eligible=True,
             pit_ineligibility_json="[]",
             durability_state="LOCAL_DB_ONLY",
@@ -214,15 +238,114 @@ def test_engine_version_creates_independent_root(isolated_db) -> None:
     first = service.evaluate_prediction(
         prediction_hash=prediction_hash,
         cost_identity=_cost_identity(),
+        engine_version="prediction-outcome-fixed-horizon-v1",
     )
     second = service.evaluate_prediction(
         prediction_hash=prediction_hash,
         cost_identity=_cost_identity(),
-        engine_version="prediction-outcome-fixed-horizon-v2-test",
     )
+    assert PREDICTION_OUTCOME_ENGINE_VERSION == "prediction-outcome-fixed-horizon-v2"
     assert second["disposition"] == "created"
     assert second["outcome_hash"] != first["outcome_hash"]
     assert second["supersedes_outcome_hash"] is None
+    rows = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)
+    assert [row.evaluation_engine_version for row in rows] == [
+        "prediction-outcome-fixed-horizon-v1",
+        PREDICTION_OUTCOME_ENGINE_VERSION,
+    ]
+
+
+def test_minimum_commission_uses_frozen_reference_notional_on_both_sides() -> None:
+    bars = [
+        StockDaily(code="600519", date=date(2026, 9, 18), open=100.0, high=101.0, low=99.0, close=100.0),
+        StockDaily(code="600519", date=date(2026, 9, 21), open=104.0, high=106.0, low=103.0, close=105.0),
+        StockDaily(code="600519", date=date(2026, 9, 22), open=109.0, high=111.0, low=108.0, close=110.0),
+    ]
+    small = _cost_identity()
+    small.update(
+        buy_fee_rate=0.0001,
+        sell_fee_rate=0.0001,
+        minimum_commission_cny=5.0,
+        reference_entry_notional_cny=10_000.0,
+    )
+    small_result = BacktestEngine.evaluate_fixed_horizon_take(
+        forward_bars=bars,
+        cost_identity=PredictionOutcomeService.normalize_cost_identity(small),
+    )
+    assert small_result["entry_notional_cny"] == pytest.approx(10_000.0)
+    assert small_result["exit_notional_cny"] == pytest.approx(11_000.0)
+    assert small_result["buy_commission_cny"] == pytest.approx(5.0)
+    assert small_result["sell_commission_cny"] == pytest.approx(5.0)
+
+    large = dict(small)
+    large.update(
+        buy_fee_rate=0.001,
+        sell_fee_rate=0.001,
+        reference_entry_notional_cny=1_000_000.0,
+    )
+    large_result = BacktestEngine.evaluate_fixed_horizon_take(
+        forward_bars=bars,
+        cost_identity=PredictionOutcomeService.normalize_cost_identity(large),
+    )
+    assert large_result["buy_commission_cny"] == pytest.approx(1_000.0)
+    assert large_result["sell_commission_cny"] == pytest.approx(1_100.0)
+
+
+def test_cost_identity_v2_rejects_invalid_model_fields() -> None:
+    bad_basis = _cost_identity()
+    bad_basis["commission_basis"] = "UNKNOWN"
+    with pytest.raises(ValueError, match="commission_basis"):
+        PredictionOutcomeService.normalize_cost_identity(bad_basis)
+
+    ambiguous_all_in = _cost_identity()
+    ambiguous_all_in["commission_basis"] = "ALL_IN_INCLUDES_EXCHANGE_HANDLING_AND_REGULATORY_LEVY"
+    with pytest.raises(ValueError, match="commission_basis"):
+        PredictionOutcomeService.normalize_cost_identity(ambiguous_all_in)
+
+    bad_policy = _cost_identity()
+    bad_policy["minimum_fee_policy"] = "UNSUPPORTED"
+    with pytest.raises(ValueError, match="minimum_fee_policy"):
+        PredictionOutcomeService.normalize_cost_identity(bad_policy)
+
+    bad_minimum = _cost_identity()
+    bad_minimum["minimum_commission_cny"] = -1.0
+    with pytest.raises(ValueError, match="minimum_commission_cny"):
+        PredictionOutcomeService.normalize_cost_identity(bad_minimum)
+
+    zero_notional = _cost_identity()
+    zero_notional["reference_entry_notional_cny"] = 0.0
+    with pytest.raises(ValueError, match="reference_entry_notional_cny"):
+        PredictionOutcomeService.normalize_cost_identity(zero_notional)
+
+
+def test_cost_identity_asset_mismatch_is_rejected(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    bad_cost = _cost_identity()
+    bad_cost["exchange"] = "SZ"
+    with pytest.raises(ValueError, match="exchange mismatch"):
+        PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+            prediction_hash=prediction_hash,
+            cost_identity=bad_cost,
+        )
+
+
+def test_cost_identity_validity_interval_fails_closed(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    expired = _cost_identity()
+    expired["effective_to"] = "2026-09-21"
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=expired,
+    )
+
+    assert result["status"] == "UNLABELABLE"
+    rows = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)
+    assert len(rows) == 1
+    assert rows[0].label_reason == "COST_IDENTITY_OUT_OF_RANGE"
+    assert rows[0].execution_state == "EXECUTION_UNKNOWN"
 
 
 def test_invalid_entry_is_unlabelable_not_silently_filled(isolated_db) -> None:

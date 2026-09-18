@@ -224,11 +224,20 @@ def test_training_admission_stays_blocked_for_local_unapproved_foundation(isolat
         cost_identity_hash=COST_HASH,
         cost_identity_approved=False,
         durable_references_admitted=False,
+        execution_realism_approved=False,
     )
     assert result["training_admission"] == "BLOCKED"
     assert "LOCAL_DB_ONLY_REFERENCES" in result["training_admission_reasons"]
     assert "DURABLE_REFERENCES_NOT_ADMITTED" in result["training_admission_reasons"]
     assert "COST_IDENTITY_NOT_APPROVED" in result["training_admission_reasons"]
+    assert "EXECUTION_REALISM_NOT_APPROVED" in result["training_admission_reasons"]
+
+    realism_approved = PITDatasetService(db_manager=isolated_db).build_manifest(
+        cost_identity_hash=COST_HASH,
+        execution_realism_approved=True,
+    )
+    assert "EXECUTION_REALISM_NOT_APPROVED" not in realism_approved["training_admission_reasons"]
+    assert realism_approved["training_admission"] == "BLOCKED"
 
 
 def test_asset_level_auto_screen_does_not_require_universe_snapshot(isolated_db) -> None:

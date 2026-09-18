@@ -407,11 +407,31 @@ class BacktestEngine:
         other_sell = cls._non_negative_cost(cost_identity, "other_sell_rate")
         buy_slip = cls._non_negative_cost(cost_identity, "buy_slippage_bps") / 10_000.0
         sell_slip = cls._non_negative_cost(cost_identity, "sell_slippage_bps") / 10_000.0
+        minimum_commission = cls._non_negative_cost(
+            cost_identity,
+            "minimum_commission_cny",
+        )
+        reference_entry_notional = cls._non_negative_cost(
+            cost_identity,
+            "reference_entry_notional_cny",
+        )
+        if reference_entry_notional <= 0:
+            raise ValueError("invalid cost identity field: reference_entry_notional_cny")
 
         executed_entry = entry_reference * (1.0 + buy_slip)
         executed_exit = exit_reference * (1.0 - sell_slip)
-        buy_cash = executed_entry * (1.0 + buy_fee + other_buy)
-        sell_cash = executed_exit * (1.0 - sell_fee - sell_tax - other_sell)
+        quantity = reference_entry_notional / executed_entry
+        entry_notional = quantity * executed_entry
+        exit_notional = quantity * executed_exit
+        buy_commission = max(entry_notional * buy_fee, minimum_commission)
+        sell_commission = max(exit_notional * sell_fee, minimum_commission)
+        buy_cash = entry_notional + buy_commission + entry_notional * other_buy
+        sell_cash = (
+            exit_notional
+            - sell_commission
+            - exit_notional * sell_tax
+            - exit_notional * other_sell
+        )
         gross_return_pct = (exit_reference - entry_reference) / entry_reference * 100.0
         net_return_pct = (sell_cash - buy_cash) / buy_cash * 100.0
 
@@ -438,6 +458,10 @@ class BacktestEngine:
             "exit_reference_price": exit_reference,
             "entry_price": executed_entry,
             "exit_price": executed_exit,
+            "entry_notional_cny": entry_notional,
+            "exit_notional_cny": exit_notional,
+            "buy_commission_cny": buy_commission,
+            "sell_commission_cny": sell_commission,
             "gross_return_pct": gross_return_pct,
             "net_return_pct": net_return_pct,
             "max_adverse_excursion_pct": mae,

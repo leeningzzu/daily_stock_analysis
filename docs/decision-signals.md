@@ -98,9 +98,11 @@ PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增�
 - adjustment basis 只在 exact provider route 能证明时绑定。当前 AkShare A-share history route 与 direct `TencentFetcher` 明确请求 `qfq`；其他来源仍保持 unproven，不做“CN 默认前复权”的推断。
 - research route 只区分 `AUTO_SCREEN` 与 `SPECIFIED_CODES`。`manual/autocomplete/import/image` 仍只是 API/UI request origin；AUTO_SCREEN 复用现有 screening provenance，但 `run_id` 不冒充 immutable universe snapshot。首个 asset-level Meta-filter dataset 不把 universe membership 设为普遍前置，只有未来 AUTO_SCREEN selection-efficacy 研究才要求完整 universe identity。
 - `PredictionOutcome` 是同库 append-only research sidecar，不替换现有 operational `DecisionSignalOutcome`。因为 canonical `WAIT` 对应 public `watch`，而现有 directional outcome service 会把 `watch` 视为 non-directional，所以 research outcome 由薄 `PredictionOutcomeService` 直接复用既有 `BacktestEngine + StockRepository` primitives。
-- 第一主标签保持 `META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1`：盘后 prediction 的最早标准化 entry 是下一交易日 open，第三个 forward session close 固定退出；主标签不使用 dynamic stop/take。cost identity 必须显式注入，缺失不能默认为零成本；仓库不内置本项目尚未 currentness 核验/批准的 A 股 fee/tax/slippage 数值。
-- terminal research outcome 不原地改写：exact replay idempotent；同 engine/data correction 追加新行并显式 `supersedes_outcome_hash + correction_reason`；engine version 变化创建独立 lineage；普通 AnalysisHistory cleanup 不删除 Ledger/PredictionOutcome research rows。
-- 这些身份列/sidecar 仍不等于“历史 PIT 数据已经具备”。`LOCAL_DB_ONLY`、历史 provider vintage、durable referenced bytes 与正式 numeric cost identity 等 gate 继续独立阻止 unattended training。
+- 第一主标签保持 `META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1`：盘后 prediction 的最早标准化 entry 是下一交易日 open，第三个 forward session close 固定退出；主标签不使用 dynamic stop/take。cost identity 必须显式注入，缺失不能默认为零成本；仓库不内置未经 currentness 核验/批准的 A 股 fee/tax/slippage 数值。
+- `cost-identity-v2` 将 market/instrument/exchange/currency、规则有效期、来源/版本、结构化 commission basis、冻结的 `PER_SIDE_MAX_NOTIONAL_RATE_OR_MINIMUM_CNY` 最低佣金政策、显式费税率、双边 slippage 与冻结的 `reference_entry_notional_cny` 一并纳入 canonical hash。commission basis 必须显式声明 `ALL_IN...OTHER_IS_TRANSFER_ONLY` 或 `NET...OTHER_INCLUDES_THEM`，拒绝语义含混的 all-in/net 口径，避免经手费/监管费在券商佣金与 `other_*` 中重复计入。绝对最低佣金按每边 `max(notional × commission_rate, minimum_commission_cny)` 计算；reference notional 是预声明研究假设，禁止按历史 P&L 搜参。entry/exit 任一交易日落出同一 cost identity 有效期即 `UNLABELABLE`，当前规则不得回填未知历史区间；cost 的 market/instrument/exchange/currency 必须与 Ledger 冻结资产身份一致。
+- terminal research outcome 不原地改写：exact replay idempotent；同 engine/data correction 追加新行并显式 `supersedes_outcome_hash + correction_reason`；`prediction-outcome-fixed-horizon-v2` 与旧 engine identity 分离，旧 v1 outcome 不回写；普通 AnalysisHistory cleanup 不删除 Ledger/PredictionOutcome research rows。
+- cost identity 获批仍不足以打开训练。涨跌停非成交、停牌/无下一可交易价、next-open 时点真实性、历史价格限制制度与 ETF 执行差异进入独立 `EXECUTION_REALISM_NOT_APPROVED` gate；当前 `StockDaily` 缺少显式 trade-status/limit-price 身份，因此先保持 fail-closed，再由独立 execution-realism milestone 复用 XSHG 日历收敛最小数据/逻辑。
+- 这些身份列/sidecar 仍不等于“历史 PIT 数据已经具备”。`LOCAL_DB_ONLY`、历史 provider vintage、durable referenced bytes、正式 numeric cost identity、execution realism 与 PIT gap 等 gate 继续独立阻止 unattended training。
 
 ### PIT Dataset manifest foundation
 
@@ -110,7 +112,7 @@ PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增�
 - TRAIN/VALIDATION 只绑定各自下一个 block cutoff 之前已经 `available_at` 可知的 effective Outcome correction，并要求 label exit session 严格早于下一个 block 的首个 session；越界或晚到 correction 记录 purge reason，不移动边界来改善结果。
 - FINAL_TEST 永久以 `SEALED` 状态写入 manifest。assignment 只记录 prediction/outcome/data identity 与可审计时间边界，不复制 `label_value`、收益或命中结果，避免开发 consumer 从 manifest 直接读取测试集答案。
 - AUTO_SCREEN / SPECIFIED_CODES 保留独立 selection route；当前 asset-level Meta-filter purpose 不要求完整 universe snapshot，只有未来 selection-efficacy purpose 才需要 immutable universe membership。
-- 当前 `LOCAL_DB_ONLY`、durable referenced bytes 未准入、正式 numeric cost identity 未批准、PIT gap 或任一 split 在合法 purge 后为空，都使 `TRAINING_ADMISSION=BLOCKED`。manifest foundation 不等于已经允许训练、校准或打开 FINAL_TEST。
+- 当前 `LOCAL_DB_ONLY`、durable referenced bytes 未准入、正式 numeric cost identity 未批准、execution realism 未批准、PIT gap 或任一 split 在合法 purge 后为空，都使 `TRAINING_ADMISSION=BLOCKED`。manifest foundation 不等于已经允许训练、校准或打开 FINAL_TEST。
 
 ## API
 

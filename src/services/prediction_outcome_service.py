@@ -17,18 +17,27 @@ from src.services.pit_identity import build_bar_sequence_identity, canonical_jso
 from src.storage import DatabaseManager, utc_naive_now
 
 
-PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v1"
+PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v2"
 PRIMARY_LABEL_IDENTITY = "META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1"
 PRIMARY_HORIZON_IDENTITY = "XSHG_POSTMARKET_NEXT_OPEN_3_FORWARD_SESSIONS_FIXED_CLOSE_V1"
 
+_COST_SCHEMA_VERSION = "cost-identity-v2"
+_MINIMUM_FEE_POLICY = "PER_SIDE_MAX_NOTIONAL_RATE_OR_MINIMUM_CNY"
+_ALLOWED_COMMISSION_BASES = {
+    "ALL_IN_INCLUDES_EXCHANGE_HANDLING_AND_REGULATORY_LEVY_OTHER_IS_TRANSFER_ONLY",
+    "NET_EXCLUDES_EXCHANGE_HANDLING_AND_REGULATORY_LEVY_OTHER_INCLUDES_THEM",
+}
 _COST_TEXT_FIELDS = (
+    "schema_version",
     "market",
     "instrument_type",
+    "exchange",
     "currency",
-    "effective_date",
+    "effective_from",
     "source",
     "version",
     "cost_model_mode",
+    "commission_basis",
     "minimum_fee_policy",
 )
 _COST_NUMERIC_FIELDS = (
@@ -39,6 +48,8 @@ _COST_NUMERIC_FIELDS = (
     "other_sell_rate",
     "buy_slippage_bps",
     "sell_slippage_bps",
+    "minimum_commission_cny",
+    "reference_entry_notional_cny",
 )
 
 
@@ -73,6 +84,7 @@ class PredictionOutcomeService:
             return {"status": "UNLABELABLE", "reason": "DATA_AS_OF_NOT_BOUND"}
 
         normalized_cost = self.normalize_cost_identity(cost_identity)
+        self._validate_cost_identity_for_ledger(normalized_cost, ledger)
         cost_hash = sha256_payload(normalized_cost)
         root_identity = {
             "prediction_hash": ledger.prediction_hash,
@@ -96,11 +108,24 @@ class PredictionOutcomeService:
                 "observed_forward_sessions": len(bars),
             }
 
-        evaluation = BacktestEngine.evaluate_fixed_horizon_take(
-            forward_bars=bars,
-            cost_identity=normalized_cost,
-            eval_window_days=3,
-        )
+        if not self._cost_identity_covers_sessions(
+            normalized_cost,
+            entry_session=bars[0].date,
+            exit_session=bars[2].date,
+        ):
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "EXECUTION_UNKNOWN",
+                "unable_reason": "COST_IDENTITY_OUT_OF_RANGE",
+                "entry_session": bars[0].date,
+                "exit_session": bars[2].date,
+            }
+        else:
+            evaluation = BacktestEngine.evaluate_fixed_horizon_take(
+                forward_bars=bars,
+                cost_identity=normalized_cost,
+                eval_window_days=3,
+            )
         data_identity = build_bar_sequence_identity(
             bars[:3],
             stock_code=ledger.stock_code,
@@ -187,6 +212,35 @@ class PredictionOutcomeService:
             if not text:
                 raise ValueError(f"missing cost identity field: {key}")
             normalized[key] = text
+
+        if normalized["schema_version"] != _COST_SCHEMA_VERSION:
+            raise ValueError("unsupported cost identity schema_version")
+        normalized["market"] = normalized["market"].lower()
+        normalized["instrument_type"] = normalized["instrument_type"].lower()
+        normalized["exchange"] = normalized["exchange"].upper()
+        normalized["currency"] = normalized["currency"].upper()
+        normalized["effective_from"] = cls._parse_iso_date(
+            normalized["effective_from"],
+            field="effective_from",
+        ).isoformat()
+
+        effective_to_text = str(value.get("effective_to") or "").strip()
+        if effective_to_text:
+            effective_to = cls._parse_iso_date(effective_to_text, field="effective_to")
+            if effective_to < date.fromisoformat(normalized["effective_from"]):
+                raise ValueError("cost identity effective_to precedes effective_from")
+            normalized["effective_to"] = effective_to.isoformat()
+        else:
+            normalized["effective_to"] = None
+
+        commission_basis = normalized["commission_basis"].upper()
+        if commission_basis not in _ALLOWED_COMMISSION_BASES:
+            raise ValueError("unsupported cost identity commission_basis")
+        normalized["commission_basis"] = commission_basis
+
+        if normalized["minimum_fee_policy"] != _MINIMUM_FEE_POLICY:
+            raise ValueError("unsupported cost identity minimum_fee_policy")
+
         for key in _COST_NUMERIC_FIELDS:
             raw = value.get(key)
             try:
@@ -196,7 +250,82 @@ class PredictionOutcomeService:
             if not math.isfinite(number) or number < 0:
                 raise ValueError(f"missing or invalid cost identity field: {key}")
             normalized[key] = number
+        if normalized["reference_entry_notional_cny"] <= 0:
+            raise ValueError("reference_entry_notional_cny must be positive")
         return normalized
+
+    @classmethod
+    def _validate_cost_identity_for_ledger(
+        cls,
+        cost_identity: Mapping[str, Any],
+        ledger: Any,
+    ) -> None:
+        if str(cost_identity["market"]).lower() != str(ledger.market or "").strip().lower():
+            raise ValueError("cost identity market mismatch")
+        if str(cost_identity["instrument_type"]).lower() != str(
+            ledger.instrument_type or ""
+        ).strip().lower():
+            raise ValueError("cost identity instrument_type mismatch")
+
+        try:
+            asset_identity = json.loads(str(ledger.asset_identity_json or ""))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ledger asset identity is not available for cost matching") from exc
+        if not isinstance(asset_identity, dict):
+            raise ValueError("ledger asset identity is not available for cost matching")
+
+        expected_market = str(asset_identity.get("market") or "").strip().lower()
+        expected_type = str(asset_identity.get("instrument_type") or "").strip().lower()
+        expected_exchange = str(asset_identity.get("exchange") or "").strip().upper()
+        expected_currency = str(asset_identity.get("currency") or "").strip().upper()
+        if (
+            not expected_market
+            or not expected_type
+            or not expected_exchange
+            or not expected_currency
+        ):
+            raise ValueError("ledger asset identity is incomplete for cost matching")
+        if str(cost_identity["market"]).lower() != expected_market:
+            raise ValueError("cost identity asset market mismatch")
+        if str(cost_identity["instrument_type"]).lower() != expected_type:
+            raise ValueError("cost identity asset instrument_type mismatch")
+        if str(cost_identity["exchange"]).upper() != expected_exchange:
+            raise ValueError("cost identity exchange mismatch")
+        if str(cost_identity["currency"]).upper() != expected_currency:
+            raise ValueError("cost identity currency mismatch")
+
+    @classmethod
+    def _cost_identity_covers_sessions(
+        cls,
+        cost_identity: Mapping[str, Any],
+        *,
+        entry_session: date,
+        exit_session: date,
+    ) -> bool:
+        effective_from = cls._parse_iso_date(
+            cost_identity["effective_from"],
+            field="effective_from",
+        )
+        effective_to_text = str(cost_identity.get("effective_to") or "").strip()
+        effective_to = (
+            cls._parse_iso_date(effective_to_text, field="effective_to")
+            if effective_to_text
+            else None
+        )
+        if entry_session < effective_from or exit_session < effective_from:
+            return False
+        if effective_to is not None and (
+            entry_session > effective_to or exit_session > effective_to
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _parse_iso_date(value: Any, *, field: str) -> date:
+        try:
+            return date.fromisoformat(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid cost identity field: {field}") from exc
 
     @staticmethod
     def _is_meta_opportunity(evidence_json: str) -> bool:

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] PredictionOutcome research execution realism 增加 source-neutral `execution-identity-v1`：以 fail-closed XSHG exact-session 解析替代“后续三条日线”假设，calendar 未证明时阻断、已完成 session 缺 bar/执行证据 UNKNOWN/entry 或 exit hard-nonfill 时保持 `UNLABELABLE`，并以 nullable execution identity hash/json 保存可修正的后验执行证据；engine 升级为 v3，旧 outcome 不回写，provider 权利与 durable bytes 继续独立准入。
 - [改进] PIT research cost identity 升级为 v2：在既有 PredictionOutcome/BacktestEngine/PITDataset 路线上加入交易所与规则有效期、结构化佣金口径、冻结 reference notional 和逐边绝对最低佣金，历史区间或资产身份不匹配时 fail-closed；PredictionOutcome engine 升级为 v2 且不改写旧 outcome，同时新增 `EXECUTION_REALISM_NOT_APPROVED` 训练门，将涨跌停/停牌/next-open 等真实成交约束继续留在独立 pre-training milestone。
 - [新功能] GitHub Actions 新增仅人工 `stocks-only` 可激活的 P0 有界指定股票验收：独立接收 1–2 个沪深普通 A 股，不读取或覆盖 `STOCK_LIST`，禁用搜索、Agent、重试和模型回退，将主模型请求限制为每轮最多 2 次，并在 deterministic WAIT/PASS canonical action 一致性通过后只发送一封中文 simple 汇总 Email。
 - [新功能] GitHub Actions / CLI 新增仅 `workflow_dispatch` 可激活的有界 `AUTO_SCREEN` 手动入口：`mode=auto-screen`，最终进入深析的候选数限制为 1–3（默认 1），固定复用现有 `momentum_quality` deterministic screening 与既有 shared deep-analysis / canonical decision / report consumer；不改变现有定时计划、`SPECIFIED_CODES` 或 P0 路径。

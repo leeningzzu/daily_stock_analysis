@@ -69,6 +69,53 @@ def _cost_identity() -> dict:
     }
 
 
+def _execution_identity(
+    *,
+    source_evidence_hash: str = "e" * 64,
+    entry_state: str = "PROVEN_FILL_NOT_BLOCKED",
+    exit_state: str = "PROVEN_FILL_NOT_BLOCKED",
+) -> dict:
+    return {
+        "schema_version": "execution-identity-v1",
+        "market": "cn",
+        "instrument_type": "stock",
+        "exchange": "SH",
+        "symbol": "600519",
+        "calendar": "XSHG",
+        "policy_version": "unit-test-policy-v1",
+        "source": "unit-test-fixture",
+        "source_version": "fixture-v1",
+        "source_evidence_hash": source_evidence_hash,
+        "expected_sessions": ["2026-09-18", "2026-09-21", "2026-09-22"],
+        "scope_state": "ADMITTED_SH_SZ_STOCK_RULES_PROVEN",
+        "entry_hard_nonfill_state": entry_state,
+        "exit_hard_nonfill_state": exit_state,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _fixed_execution_calendar(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_forward_sessions_fail_closed",
+        lambda market, after_date, count: [
+            date(2026, 9, 18),
+            date(2026, 9, 21),
+            date(2026, 9, 22),
+        ],
+    )
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_latest_completed_session_fail_closed",
+        lambda market: date(2026, 9, 22),
+    )
+    original = PredictionOutcomeService.evaluate_prediction
+
+    def _with_execution_identity(self, *args, **kwargs):
+        kwargs.setdefault("execution_identity", _execution_identity())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(PredictionOutcomeService, "evaluate_prediction", _with_execution_identity)
+
+
 def _seed_prediction(
     db: DatabaseManager,
     prediction_hash: str = "a" * 64,
@@ -176,11 +223,33 @@ def test_wait_proven_opportunity_uses_next_open_and_third_close(isolated_db) -> 
     assert row.exit_price == pytest.approx(106.0)
     assert row.net_return_pct == pytest.approx(6.0)
     assert row.adjustment_basis == "qfq"
+    assert row.execution_identity_hash is not None
+    assert json.loads(row.execution_identity_json)["schema_version"] == "execution-identity-v1"
 
 
-def test_unmatured_prediction_writes_no_terminal_outcome(isolated_db) -> None:
+def test_calendar_unproven_blocks_without_terminal_outcome(isolated_db, monkeypatch) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_forward_sessions_fail_closed",
+        lambda market, after_date, count: None,
+    )
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+    assert result["status"] == "EVALUATION_BLOCKED"
+    with isolated_db.get_session() as session:
+        assert session.query(PredictionOutcomeRecord).count() == 0
+
+
+def test_unmatured_prediction_writes_no_terminal_outcome(isolated_db, monkeypatch) -> None:
     _, prediction_hash = _seed_prediction(isolated_db)
     _seed_bars(isolated_db, closes=(102.0, 104.0))
+    monkeypatch.setattr(
+        "src.services.prediction_outcome_service.resolve_latest_completed_session_fail_closed",
+        lambda market: date(2026, 9, 21),
+    )
 
     result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
         prediction_hash=prediction_hash,
@@ -238,19 +307,19 @@ def test_engine_version_creates_independent_root(isolated_db) -> None:
     first = service.evaluate_prediction(
         prediction_hash=prediction_hash,
         cost_identity=_cost_identity(),
-        engine_version="prediction-outcome-fixed-horizon-v1",
+        engine_version="prediction-outcome-fixed-horizon-v2",
     )
     second = service.evaluate_prediction(
         prediction_hash=prediction_hash,
         cost_identity=_cost_identity(),
     )
-    assert PREDICTION_OUTCOME_ENGINE_VERSION == "prediction-outcome-fixed-horizon-v2"
+    assert PREDICTION_OUTCOME_ENGINE_VERSION == "prediction-outcome-fixed-horizon-v3"
     assert second["disposition"] == "created"
     assert second["outcome_hash"] != first["outcome_hash"]
     assert second["supersedes_outcome_hash"] is None
     rows = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)
     assert [row.evaluation_engine_version for row in rows] == [
-        "prediction-outcome-fixed-horizon-v1",
+        "prediction-outcome-fixed-horizon-v2",
         PREDICTION_OUTCOME_ENGINE_VERSION,
     ]
 
@@ -383,3 +452,115 @@ def test_cost_identity_is_mandatory_and_history_cleanup_preserves_research_rows(
     with isolated_db.get_session() as session:
         assert session.query(PredictionLedgerRecord).count() == 1
         assert session.query(PredictionOutcomeRecord).count() == 1
+
+
+def test_missing_completed_expected_session_is_unlabelable_and_not_skipped(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    with isolated_db.session_scope() as session:
+        missing = session.query(StockDaily).filter(StockDaily.date == date(2026, 9, 21)).one()
+        session.delete(missing)
+        session.add(
+            StockDaily(
+                code="600519",
+                date=date(2026, 9, 23),
+                open=107.0,
+                high=109.0,
+                low=106.0,
+                close=108.0,
+                volume=1_000_010,
+                data_source="AkshareFetcher",
+            )
+        )
+
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+    )
+    row = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)[0]
+    assert result["status"] == "UNLABELABLE"
+    assert row.label_reason == "EXPECTED_SESSION_BAR_MISSING"
+    assert row.entry_session == date(2026, 9, 18)
+    assert row.exit_session == date(2026, 9, 22)
+
+
+def test_execution_identity_session_and_asset_mismatch_fail_closed(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    service = PredictionOutcomeService(db_manager=isolated_db)
+
+    bad_sessions = _execution_identity()
+    bad_sessions["expected_sessions"][-1] = "2026-09-23"
+    with pytest.raises(ValueError, match="expected_sessions mismatch"):
+        service.evaluate_prediction(
+            prediction_hash=prediction_hash,
+            cost_identity=_cost_identity(),
+            execution_identity=bad_sessions,
+        )
+
+    bad_asset = _execution_identity()
+    bad_asset["exchange"] = "SZ"
+    with pytest.raises(ValueError, match="exchange mismatch"):
+        service.evaluate_prediction(
+            prediction_hash=prediction_hash,
+            cost_identity=_cost_identity(),
+            execution_identity=bad_asset,
+        )
+
+
+@pytest.mark.parametrize(
+    ("entry_state", "exit_state", "reason"),
+    [
+        ("UNKNOWN", "PROVEN_FILL_NOT_BLOCKED", "EXECUTION_EVIDENCE_UNKNOWN"),
+        ("HARD_NONFILL", "PROVEN_FILL_NOT_BLOCKED", "ENTRY_HARD_NONFILL"),
+        ("PROVEN_FILL_NOT_BLOCKED", "HARD_NONFILL", "EXIT_HARD_NONFILL"),
+    ],
+)
+def test_execution_identity_blocks_unproven_or_hard_nonfill(
+    isolated_db,
+    entry_state,
+    exit_state,
+    reason,
+) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    result = PredictionOutcomeService(db_manager=isolated_db).evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+        execution_identity=_execution_identity(entry_state=entry_state, exit_state=exit_state),
+    )
+    row = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)[0]
+    assert result["status"] == "UNLABELABLE"
+    assert row.label_reason == reason
+    assert row.entry_price is None
+    assert row.exit_price is None
+
+
+def test_execution_identity_correction_changes_outcome_but_keeps_root(isolated_db) -> None:
+    _, prediction_hash = _seed_prediction(isolated_db)
+    _seed_bars(isolated_db)
+    service = PredictionOutcomeService(db_manager=isolated_db)
+    first = service.evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+        execution_identity=_execution_identity(source_evidence_hash="1" * 64),
+    )
+    changed_identity = _execution_identity(source_evidence_hash="2" * 64)
+    with pytest.raises(ValueError, match="correction_reason"):
+        service.evaluate_prediction(
+            prediction_hash=prediction_hash,
+            cost_identity=_cost_identity(),
+            execution_identity=changed_identity,
+        )
+    corrected = service.evaluate_prediction(
+        prediction_hash=prediction_hash,
+        cost_identity=_cost_identity(),
+        execution_identity=changed_identity,
+        correction_reason="execution_evidence_correction",
+    )
+    rows = PredictionOutcomeRepository(isolated_db).list_for_prediction(prediction_hash)
+    assert len(rows) == 2
+    assert rows[0].root_identity_hash == rows[1].root_identity_hash
+    assert rows[0].execution_identity_hash != rows[1].execution_identity_hash
+    assert corrected["outcome_hash"] != first["outcome_hash"]
+    assert rows[1].supersedes_outcome_hash == rows[0].outcome_hash

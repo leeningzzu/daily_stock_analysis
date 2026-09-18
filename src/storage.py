@@ -1236,6 +1236,8 @@ class PredictionOutcomeRecord(Base):
     horizon_identity = Column(String(128), nullable=False, index=True)
     cost_identity_hash = Column(String(64), nullable=False, index=True)
     cost_identity_json = Column(Text, nullable=False)
+    execution_identity_hash = Column(String(64), index=True)
+    execution_identity_json = Column(Text)
     evaluation_engine_version = Column(String(64), nullable=False, index=True)
     supersedes_outcome_hash = Column(String(64), index=True)
     correction_reason = Column(String(128))
@@ -1504,6 +1506,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_prediction_ledger_pit_schema()
+            self._ensure_prediction_outcome_execution_schema()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1620,6 +1623,40 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 if not self._is_sqlite_duplicate_column_error(exc, column):
                     raise
             existing.add(column)
+
+    def _ensure_prediction_outcome_execution_schema(self) -> None:
+        """Add nullable execution-evidence identity columns without backfilling legacy rows."""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(PredictionOutcomeRecord.__tablename__):
+            return
+        existing = {
+            column["name"]
+            for column in inspector.get_columns(PredictionOutcomeRecord.__tablename__)
+        }
+        expected = {
+            "execution_identity_hash": "VARCHAR(64)",
+            "execution_identity_json": "TEXT",
+        }
+        for column, sql_type in expected.items():
+            if column in existing:
+                continue
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {PredictionOutcomeRecord.__tablename__} "
+                        f"ADD COLUMN {column} {sql_type}"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, column):
+                    raise
+            existing.add(column)
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_outcomes_execution_identity_hash "
+                "ON prediction_outcomes (execution_identity_hash)"
+            )
 
     def _ensure_decision_signal_profile_indexes(self) -> None:
         """Create profile-aware indexes without dropping legacy indexes."""

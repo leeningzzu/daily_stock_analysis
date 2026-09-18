@@ -224,13 +224,59 @@ class TestStorage(unittest.TestCase):
         inspector = sqlalchemy_inspect(db._engine)
         unique_constraints = inspector.get_unique_constraints("prediction_outcomes")
         indexes = {item["name"] for item in inspector.get_indexes("prediction_outcomes")}
+        columns = {item["name"] for item in inspector.get_columns("prediction_outcomes")}
 
         self.assertTrue(
             any(item["column_names"] == ["outcome_hash"] for item in unique_constraints)
         )
         self.assertIn("ix_prediction_outcome_lineage", indexes)
+        self.assertIn("ix_prediction_outcomes_execution_identity_hash", indexes)
+        self.assertIn("execution_identity_hash", columns)
+        self.assertIn("execution_identity_json", columns)
         self.assertIsNotNone(PredictionOutcomeRecord.__table__)
         DatabaseManager.reset_instance()
+
+    def test_prediction_outcome_execution_schema_migration_is_nullable_and_idempotent(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = os.path.join(temp_dir.name, "legacy_prediction_outcome.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE prediction_outcomes ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "outcome_hash VARCHAR(64))"
+                )
+                conn.execute(
+                    "INSERT INTO prediction_outcomes (outcome_hash) VALUES (?)",
+                    ("b" * 64,),
+                )
+
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            db._ensure_prediction_outcome_execution_schema()
+            db._ensure_prediction_outcome_execution_schema()
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(prediction_outcomes)").fetchall()
+                }
+                indexes = {
+                    row[1]
+                    for row in conn.execute("PRAGMA index_list(prediction_outcomes)").fetchall()
+                }
+                values = conn.execute(
+                    "SELECT execution_identity_hash, execution_identity_json "
+                    "FROM prediction_outcomes"
+                ).fetchone()
+            self.assertIn("execution_identity_hash", columns)
+            self.assertIn("execution_identity_json", columns)
+            self.assertIn("ix_prediction_outcomes_execution_identity_hash", indexes)
+            self.assertEqual(values, (None, None))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
 
     def test_fresh_schema_has_immutable_pit_dataset_manifest_identity(self):
         DatabaseManager.reset_instance()

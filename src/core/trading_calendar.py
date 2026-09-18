@@ -248,6 +248,72 @@ def get_effective_trading_date(
         return fallback_date
 
 
+def resolve_forward_sessions_fail_closed(
+    market: Optional[str],
+    after_date: date,
+    count: int,
+) -> Optional[List[date]]:
+    """Return exact exchange sessions strictly after ``after_date``.
+
+    This helper is for research/outcome identities and therefore fails closed;
+    it must not inherit the fail-open semantics used by runtime scheduling.
+    """
+    if (
+        market not in MARKET_EXCHANGE
+        or not _XCALS_AVAILABLE
+        or not isinstance(after_date, date)
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count <= 0
+    ):
+        return None
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        if bool(cal.is_session(after_date)):
+            cursor = cal.next_session(cal.date_to_session(after_date, direction="previous"))
+        else:
+            cursor = cal.date_to_session(after_date, direction="next")
+        sessions = [cursor.date()]
+        while len(sessions) < count:
+            cursor = cal.next_session(cursor)
+            sessions.append(cursor.date())
+        return sessions
+    except Exception as e:
+        logger.warning("trading_calendar.resolve_forward_sessions_fail_closed: %s", e)
+        return None
+
+
+def resolve_latest_completed_session_fail_closed(
+    market: Optional[str],
+    current_time: Optional[datetime] = None,
+) -> Optional[date]:
+    """Return the latest fully completed exchange session, failing closed."""
+    if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE or not _XCALS_AVAILABLE:
+        return None
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        market_now = get_market_now(market, current_time=current_time)
+        local_date = market_now.date()
+        if not bool(cal.is_session(local_date)):
+            return cal.date_to_session(local_date, direction="previous").date()
+
+        session = cal.date_to_session(local_date, direction="previous")
+        session_close = cal.session_close(session)
+        tz_name = MARKET_TIMEZONE[market]
+        if hasattr(session_close, "tz_convert"):
+            close_local = session_close.tz_convert(tz_name).to_pydatetime()
+        elif session_close.tzinfo is not None:
+            close_local = session_close.astimezone(ZoneInfo(tz_name))
+        else:
+            close_local = session_close.replace(tzinfo=ZoneInfo(tz_name))
+        if market_now >= close_local:
+            return session.date()
+        return cal.previous_session(session).date()
+    except Exception as e:
+        logger.warning("trading_calendar.resolve_latest_completed_session_fail_closed: %s", e)
+        return None
+
+
 def resolve_historical_daily_bar_date(
     market: Optional[str],
     target_date: date,

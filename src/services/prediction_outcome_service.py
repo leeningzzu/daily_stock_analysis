@@ -10,6 +10,10 @@ import math
 from typing import Any, Dict, Optional
 
 from src.core.backtest_engine import BacktestEngine
+from src.core.trading_calendar import (
+    resolve_forward_sessions_fail_closed,
+    resolve_latest_completed_session_fail_closed,
+)
 from src.repositories.prediction_ledger_repo import PredictionLedgerRepository
 from src.repositories.prediction_outcome_repo import PredictionOutcomeRepository
 from src.repositories.stock_repo import StockRepository
@@ -17,11 +21,18 @@ from src.services.pit_identity import build_bar_sequence_identity, canonical_jso
 from src.storage import DatabaseManager, utc_naive_now
 
 
-PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v2"
+PREDICTION_OUTCOME_ENGINE_VERSION = "prediction-outcome-fixed-horizon-v3"
 PRIMARY_LABEL_IDENTITY = "META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1"
 PRIMARY_HORIZON_IDENTITY = "XSHG_POSTMARKET_NEXT_OPEN_3_FORWARD_SESSIONS_FIXED_CLOSE_V1"
 
 _COST_SCHEMA_VERSION = "cost-identity-v2"
+_EXECUTION_SCHEMA_VERSION = "execution-identity-v1"
+_EXECUTION_SCOPE_STATE = "ADMITTED_SH_SZ_STOCK_RULES_PROVEN"
+_EXECUTION_HARD_NONFILL_STATES = {
+    "PROVEN_FILL_NOT_BLOCKED",
+    "HARD_NONFILL",
+    "UNKNOWN",
+}
 _MINIMUM_FEE_POLICY = "PER_SIDE_MAX_NOTIONAL_RATE_OR_MINIMUM_CNY"
 _ALLOWED_COMMISSION_BASES = {
     "ALL_IN_INCLUDES_EXCHANGE_HANDLING_AND_REGULATORY_LEVY_OTHER_IS_TRANSFER_ONLY",
@@ -72,6 +83,7 @@ class PredictionOutcomeService:
         *,
         prediction_hash: str,
         cost_identity: Mapping[str, Any],
+        execution_identity: Mapping[str, Any],
         correction_reason: Optional[str] = None,
         engine_version: str = PREDICTION_OUTCOME_ENGINE_VERSION,
     ) -> Dict[str, Any]:
@@ -85,7 +97,10 @@ class PredictionOutcomeService:
 
         normalized_cost = self.normalize_cost_identity(cost_identity)
         self._validate_cost_identity_for_ledger(normalized_cost, ledger)
+        normalized_execution = self.normalize_execution_identity(execution_identity)
+        self._validate_execution_identity_for_ledger(normalized_execution, ledger)
         cost_hash = sha256_payload(normalized_cost)
+        execution_hash = sha256_payload(normalized_execution)
         root_identity = {
             "prediction_hash": ledger.prediction_hash,
             "label_identity": PRIMARY_LABEL_IDENTITY,
@@ -95,30 +110,97 @@ class PredictionOutcomeService:
         }
         root_hash = sha256_payload(root_identity)
 
-        bars = self.stock_repo.get_forward_bars(
-            code=ledger.stock_code,
-            analysis_date=ledger.data_as_of,
-            eval_window_days=3,
+        expected_sessions = resolve_forward_sessions_fail_closed(
+            "cn",
+            ledger.data_as_of,
+            3,
         )
-        if len(bars) < 3:
+        if expected_sessions is None:
+            return {
+                "status": "EVALUATION_BLOCKED",
+                "reason": "CALENDAR_SESSIONS_UNPROVEN",
+                "prediction_hash": ledger.prediction_hash,
+            }
+        identity_sessions = [
+            self._parse_execution_iso_date(item, field="expected_sessions")
+            for item in normalized_execution["expected_sessions"]
+        ]
+        if identity_sessions != expected_sessions:
+            raise ValueError("execution identity expected_sessions mismatch")
+
+        latest_completed = resolve_latest_completed_session_fail_closed("cn")
+        if latest_completed is None:
+            return {
+                "status": "EVALUATION_BLOCKED",
+                "reason": "LATEST_COMPLETED_SESSION_UNPROVEN",
+                "prediction_hash": ledger.prediction_hash,
+            }
+        if expected_sessions[-1] > latest_completed:
             return {
                 "status": "UNMATURED",
                 "prediction_hash": ledger.prediction_hash,
                 "required_forward_sessions": 3,
-                "observed_forward_sessions": len(bars),
+                "latest_completed_session": latest_completed.isoformat(),
+                "required_exit_session": expected_sessions[-1].isoformat(),
             }
 
-        if not self._cost_identity_covers_sessions(
+        bars_by_session = {
+            session_date: self.stock_repo.get_daily_on_date(
+                code=ledger.stock_code,
+                target_date=session_date,
+            )
+            for session_date in expected_sessions
+        }
+        bars = [bars_by_session[session_date] for session_date in expected_sessions if bars_by_session[session_date] is not None]
+        missing_sessions = [
+            session_date for session_date in expected_sessions if bars_by_session[session_date] is None
+        ]
+        entry_state = normalized_execution["entry_hard_nonfill_state"]
+        exit_state = normalized_execution["exit_hard_nonfill_state"]
+
+        if missing_sessions:
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "EXECUTION_UNKNOWN",
+                "unable_reason": "EXPECTED_SESSION_BAR_MISSING",
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
+            }
+        elif "UNKNOWN" in {entry_state, exit_state}:
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "EXECUTION_UNKNOWN",
+                "unable_reason": "EXECUTION_EVIDENCE_UNKNOWN",
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
+            }
+        elif entry_state == "HARD_NONFILL":
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "ENTRY_HARD_NONFILL",
+                "unable_reason": "ENTRY_HARD_NONFILL",
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
+            }
+        elif exit_state == "HARD_NONFILL":
+            evaluation = {
+                "eval_status": "unlabelable",
+                "execution_state": "EXIT_HARD_NONFILL",
+                "unable_reason": "EXIT_HARD_NONFILL",
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
+            }
+        elif not self._cost_identity_covers_sessions(
             normalized_cost,
-            entry_session=bars[0].date,
-            exit_session=bars[2].date,
+            entry_session=expected_sessions[0],
+            exit_session=expected_sessions[-1],
         ):
             evaluation = {
                 "eval_status": "unlabelable",
                 "execution_state": "EXECUTION_UNKNOWN",
                 "unable_reason": "COST_IDENTITY_OUT_OF_RANGE",
-                "entry_session": bars[0].date,
-                "exit_session": bars[2].date,
+                "entry_session": expected_sessions[0],
+                "exit_session": expected_sessions[-1],
             }
         else:
             evaluation = BacktestEngine.evaluate_fixed_horizon_take(
@@ -130,7 +212,7 @@ class PredictionOutcomeService:
             bars[:3],
             stock_code=ledger.stock_code,
             market=ledger.market,
-            purpose="prediction-outcome-fixed-horizon-v1",
+            purpose="prediction-outcome-fixed-horizon-v3",
         )
         available_at = utc_naive_now()
         if evaluation.get("eval_status") == "completed":
@@ -146,6 +228,7 @@ class PredictionOutcomeService:
         substantive = {
             **root_identity,
             "data_snapshot_identity": data_identity["data_snapshot_identity"],
+            "execution_identity_hash": execution_hash,
             "execution_state": evaluation.get("execution_state") or "EXECUTION_UNKNOWN",
             "entry_session": self._date_text(evaluation.get("entry_session")),
             "exit_session": self._date_text(evaluation.get("exit_session")),
@@ -166,6 +249,8 @@ class PredictionOutcomeService:
             "horizon_identity": PRIMARY_HORIZON_IDENTITY,
             "cost_identity_hash": cost_hash,
             "cost_identity_json": canonical_json(normalized_cost),
+            "execution_identity_hash": execution_hash,
+            "execution_identity_json": canonical_json(normalized_execution),
             "evaluation_engine_version": str(engine_version),
             "decision_session": ledger.data_as_of,
             "entry_session": evaluation.get("entry_session"),
@@ -201,6 +286,105 @@ class PredictionOutcomeService:
             "disposition": disposition,
             "supersedes_outcome_hash": stored["supersedes_outcome_hash"],
         }
+
+    @classmethod
+    def normalize_execution_identity(cls, value: Mapping[str, Any]) -> Dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise ValueError("execution_identity must be an object")
+        required = (
+            "schema_version",
+            "market",
+            "instrument_type",
+            "exchange",
+            "symbol",
+            "calendar",
+            "policy_version",
+            "source",
+            "source_version",
+            "source_evidence_hash",
+            "scope_state",
+            "entry_hard_nonfill_state",
+            "exit_hard_nonfill_state",
+        )
+        normalized: Dict[str, Any] = {}
+        for key in required:
+            text = str(value.get(key) or "").strip()
+            if not text:
+                raise ValueError(f"missing execution identity field: {key}")
+            normalized[key] = text
+
+        normalized["market"] = normalized["market"].lower()
+        normalized["instrument_type"] = normalized["instrument_type"].lower()
+        normalized["exchange"] = normalized["exchange"].upper()
+        normalized["calendar"] = normalized["calendar"].upper()
+        normalized["scope_state"] = normalized["scope_state"].upper()
+        normalized["entry_hard_nonfill_state"] = normalized["entry_hard_nonfill_state"].upper()
+        normalized["exit_hard_nonfill_state"] = normalized["exit_hard_nonfill_state"].upper()
+        normalized["source_evidence_hash"] = normalized["source_evidence_hash"].lower()
+
+        if normalized["schema_version"] != _EXECUTION_SCHEMA_VERSION:
+            raise ValueError("unsupported execution identity schema_version")
+        if normalized["market"] != "cn" or normalized["instrument_type"] != "stock":
+            raise ValueError("unsupported execution identity asset scope")
+        if normalized["exchange"] not in {"SH", "SZ"} or normalized["calendar"] != "XSHG":
+            raise ValueError("unsupported execution identity exchange/calendar")
+        if normalized["scope_state"] != _EXECUTION_SCOPE_STATE:
+            raise ValueError("execution identity scope is not admitted")
+        for key in ("entry_hard_nonfill_state", "exit_hard_nonfill_state"):
+            if normalized[key] not in _EXECUTION_HARD_NONFILL_STATES:
+                raise ValueError(f"unsupported execution identity {key}")
+        evidence_hash = normalized["source_evidence_hash"]
+        if len(evidence_hash) != 64 or any(ch not in "0123456789abcdef" for ch in evidence_hash):
+            raise ValueError("invalid execution identity source_evidence_hash")
+
+        raw_sessions = value.get("expected_sessions")
+        if not isinstance(raw_sessions, (list, tuple)) or len(raw_sessions) != 3:
+            raise ValueError("execution identity expected_sessions must contain exactly 3 dates")
+        sessions = [
+            cls._parse_execution_iso_date(item, field="expected_sessions")
+            for item in raw_sessions
+        ]
+        if sessions != sorted(set(sessions)):
+            raise ValueError("execution identity expected_sessions must be strictly increasing")
+        normalized["expected_sessions"] = [item.isoformat() for item in sessions]
+        return normalized
+
+    @classmethod
+    def _validate_execution_identity_for_ledger(
+        cls,
+        execution_identity: Mapping[str, Any],
+        ledger: Any,
+    ) -> None:
+        try:
+            asset_identity = json.loads(str(ledger.asset_identity_json or ""))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ledger asset identity is not available for execution matching") from exc
+        if not isinstance(asset_identity, dict):
+            raise ValueError("ledger asset identity is not available for execution matching")
+        expected = {
+            "market": str(asset_identity.get("market") or "").strip().lower(),
+            "instrument_type": str(asset_identity.get("instrument_type") or "").strip().lower(),
+            "exchange": str(asset_identity.get("exchange") or "").strip().upper(),
+            "symbol": str(asset_identity.get("symbol") or "").strip(),
+            "calendar": str(asset_identity.get("calendar") or "").strip().upper(),
+        }
+        if not all(expected.values()):
+            raise ValueError("ledger asset identity is incomplete for execution matching")
+        for key, expected_value in expected.items():
+            actual = str(execution_identity[key])
+            if key in {"market", "instrument_type"}:
+                actual = actual.lower()
+            elif key in {"exchange", "calendar"}:
+                actual = actual.upper()
+            if actual != expected_value:
+                raise ValueError(f"execution identity {key} mismatch")
+
+    @staticmethod
+    def _parse_execution_iso_date(value: Any, *, field: str) -> date:
+        try:
+            return date.fromisoformat(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid execution identity field: {field}") from exc
 
     @classmethod
     def normalize_cost_identity(cls, value: Mapping[str, Any]) -> Dict[str, Any]:

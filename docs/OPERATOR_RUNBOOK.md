@@ -125,15 +125,18 @@ LLM_MY_PROXY_MODELS=<MODEL_A>,<MODEL_B>
 
 ## 8. R2 现在怎么理解
 
-当前项目只证明了：**R2 synthetic package 的写入、HEAD、GET、独立 restore 与 hash 校验可以闭环**。
+当前项目已经证明了三层**代码能力**：synthetic R2 roundtrip、selective immutable research-state package chain、以及 boto3 低层 S3 transport。每日 workflow 也包含默认关闭的 restore-before-analysis / success-only-publish 绑定入口。
 
-目前没有证明：
-- Production R2 长期 credential；
-- GitHub Actions Production exact-object consumer；
-- 真实行情/供应商数据可以合法复制到云端；
-- R2 是当前 Prediction Ledger / PIT / model 的正式数据 owner。
+但这**不等于 Production R2 已启用**。当前默认仍是：
+- `RESEARCH_STATE_DURABILITY_ENABLED=false`；
+- 未配置长期 Production R2 credential / GitHub Secrets；
+- 未执行真实 research-state cross-run trial；
+- provider-derived / rights-conditional 字段仍需单独准入；
+- R2 仍只是 immutable byte substrate，不是 Prediction Ledger / PIT / model 的逻辑数据库 owner。
 
-因此日常操作中不要自行创建长期 R2 Key、上传真实数据或启用新 Production consumer。等项目 State 明确晋升后再按当时合同操作。
+未来正式启用时，非敏感 `RESEARCH_STATE_DURABILITY_ENABLED`、`R2_ENDPOINT_URL`、`R2_BUCKET_NAME` 应按当时合同放 Variables；`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` 放 Secrets。**在项目 State 明确进入 live-effect gate 前，不要自行创建长期 Key、填写这些值或把 enable flag 打开。**
+
+default-off 的意义是：没有显式启用变量时，现有 daily analysis 行为保持不变且不会发起 R2 请求。
 
 ## 9. 私有 GitHub 现在怎么理解
 

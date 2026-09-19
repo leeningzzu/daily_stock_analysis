@@ -1340,13 +1340,24 @@ def _run_analysis_with_runtime_scheduler_lock(
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
 ) -> None:
+    from src.services.research_state_runtime import durability_enabled
     from src.services.runtime_scheduler import run_with_global_analysis_lock
+
+    # Default-off keeps the historical run_full_analysis semantics. When durable
+    # research state is explicitly enabled, reuse the existing scheduled wrapper
+    # so analysis failures propagate to the process exit code and a later
+    # success-only publish step cannot advance durable lineage after a failed run.
+    task_runner = (
+        run_scheduled_analysis
+        if durability_enabled(os.environ)
+        else run_full_analysis
+    )
 
     # Keep startup/triggered analysis in sync with API runtime scheduler and
     # run-now entrypoint. Blocking is expected here because startup paths should
     # wait for an in-flight job before returning a response.
     run_with_global_analysis_lock(
-        task_runner=run_full_analysis,
+        task_runner=task_runner,
         config=config,
         args=args,
         stock_codes=stock_codes,

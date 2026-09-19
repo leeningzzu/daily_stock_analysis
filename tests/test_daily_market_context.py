@@ -590,6 +590,7 @@ def test_get_context_uses_isolated_market_context_query_id_when_generating() -> 
     assert context is not None
     assert context.source == "market_review_runtime"
     assert context.query_id == "query-1381"
+    assert context.market_light is None
     run_review.assert_called_once()
     assert run_review.call_args.kwargs["query_id"] == "market_context_query-1381_cn"
     assert run_review.call_args.kwargs["trigger_source"] == "daily_market_context"
@@ -626,6 +627,50 @@ def test_does_not_reuse_history_for_different_query_when_query_match_required() 
 
     assert context is None
     run_review.assert_not_called()
+
+
+def test_preserves_valid_market_light_for_internal_deterministic_consumers() -> None:
+    db = MagicMock()
+    db.get_analysis_history.return_value = []
+    service = DailyMarketContextService(db_manager=db, today_fn=lambda: date(2026, 6, 6))
+    result = MarketReviewRunResult(
+        report="市场偏防守。",
+        market_review_payload={
+            "kind": "market_review",
+            "region": "cn",
+            "summary": "市场偏防守。",
+            "market_light": {
+                "region": "cn",
+                "trade_date": "2026-06-06",
+                "status": "red",
+                "score": 28,
+                "label": "偏防守",
+                "temperature_label": "偏弱",
+                "reasons": ["breadth weak"],
+                "guidance": "控制风险",
+                "dimensions": {
+                    "breadth": {"score": 20, "available": True},
+                    "index": {"score": 35, "available": True},
+                    "limit": {"score": 30, "available": True},
+                },
+                "data_quality": "ok",
+            },
+        },
+    )
+    with patch("src.services.daily_market_context.try_acquire_market_review_lock", return_value=object()), patch(
+        "src.services.daily_market_context.release_market_review_lock"
+    ), patch("src.services.daily_market_context.run_market_review", return_value=result):
+        context = service.get_context(
+            region="cn",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            force_refresh=True,
+        )
+    assert context is not None
+    assert context.market_light is not None
+    assert context.market_light["status"] == "red"
+    assert context.market_light["data_quality"] == "ok"
+    assert "market_light" not in context.to_safe_dict()
 
 
 def test_get_context_acquires_market_review_lock_before_generating() -> None:

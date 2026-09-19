@@ -701,6 +701,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --auto-screen --auto-screen-max-results 1  # 仅 GitHub workflow_dispatch 上下文；候选数 1-3
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
@@ -740,8 +741,10 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 ```yaml
 schedule:
   # UTC 时间，北京时间 = UTC + 8
-  - cron: '0 10 * * 1-5'   # 周一到周五 18:00（北京时间）
+  - cron: '0 11 * * 1-5'   # 周一到周五 19:00（北京时间，当前默认）
 ```
+
+当前 GitHub Actions schedule 还会经过严格中国交易日 gate；周末和中国法定休市日不会进入分析。
 
 常用时间对照：
 
@@ -750,7 +753,7 @@ schedule:
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
 | 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
+| 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
 #### GitHub Actions 非交易日手动运行（Issue #461 / #466）
@@ -772,9 +775,29 @@ schedule:
 手动触发步骤：
 
 1. 打开 `Actions → 每日股票分析 → Run workflow`
-2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
-3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
-4. 点击 `Run workflow`
+2. 选择 `mode`（`full` / `market-only` / `stocks-only` / `auto-screen`）
+3. 若选择 `auto-screen`，将 `auto_screen_max_results` 设为 `1`、`2` 或 `3`（默认 `1`）；该模式仅允许人工 `workflow_dispatch`，固定复用现有 deterministic screening → shared deep-analysis / canonical decision / report consumer，不改变自动计划或 `SPECIFIED_CODES` 路径。
+4. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
+5. 点击 `Run workflow`
+
+#### AUTO_SCREEN 有界人工入口
+
+`mode=auto-screen` 只负责选择谁进入深析：筛选阶段关闭 LLM ranking，最终候选数量硬限制为 1–3，并交给现有 `run_full_analysis` / `StockAnalysisPipeline` 继续分析。最终公开动作仍由既有 canonical factor/decision owner 决定，screening score 不代表胜率或校准概率。当前入口是人工验收面，不会把现有定时任务自动切换为 AUTO_SCREEN。
+
+一次性真实验收可显式设置 `auto_screen_bounded_live=true`，但仅允许 `auto_screen_max_results=1`，并要求 `auto_screen_bounded_model` 提供本次明确批准的模型 ID。筛选本身仍保持 deterministic / `use_llm=False`；唯一候选产生后，深析阶段临时复用既有 P0 process-local boundary：单 worker、禁用 Agent/搜索/Router，模型 fallback/retry、参数恢复和完整性补全重试均为 0，直连 LiteLLM `num_retries=0`。行情数据源自身为了取得行情仍允许按既有确定性顺序 retry/fallback，它不属于模型效果边界。该 bounded-live 验收强制关闭 outbound notification，并复用现有 `selected_candidates` 与同一 canonical `AnalysisResult` 生成脱敏 `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON`，写入运行日志和 GitHub Step Summary，同时继续保存完整审计报告/Artifact；邮件/Telegram 已由既有产品验收独立证明，不在每次 AUTO_SCREEN 验收中重复发送。该开关与模型输入均只属于本次 `workflow_dispatch`，不持久化，也不改变普通 AUTO_SCREEN 或 19:00 自动计划及其通知行为。
+
+#### P0 有界指定股票验收
+
+`workflow_dispatch` 额外提供可选输入 `p0_stock_codes`。仅当 `mode=stocks-only` 且该输入非空时，才进入 P0 有界验收；自动定时任务及未填写该输入的人工任务继续走原有路径。
+
+- 只接受 1–2 个经仓库内股票索引确认的沪深普通 A 股；ETF、指数、非中国资产、重复代码及交易所冲突会在分析前拒绝。
+- 本次输入不读取或覆盖 `STOCK_LIST`，不改变自动任务、自选股或 AUTO_SCREEN 行为。
+- P0 固定单 worker、非 Agent、单模型、非流式；每轮最多 2 次主模型请求，输出上限 4096 tokens，不做报告补全重试、模型回退、传输重试或参数恢复。
+- P0 不初始化新闻搜索或社交搜索，Tavily、SearXNG 等搜索调用上限为 0。
+- 全部目标必须各成功一次；之后从同一组 canonical `AnalysisResult` 同时生成两种投影：详细审计报告保存到本地/Artifact，精简 `investor-brief-v1` 投资者简报作为唯一一封 Email。两者共享同一 canonical evidence/decision authority，但不要求字节完全相同。任一边界、目标、canonical 一致性或任一必需投影校验失败时，不发送通知并返回非零结果。
+- 公开动作由 `stock_trend_quality_pullback_v1` 的 deterministic `canonical_decision` 唯一控制。P0 只输出 `WAIT/watch` 或 `PASS/avoid`；LLM 仅提供解释，不能产生或覆盖 BUY/HOLD/EXIT。
+
+在非交易日进行明确授权的人工验收时，可同时设置 `force_run=true`；它只影响这次 `workflow_dispatch`，不会改变自动计划任务的 strict trading-day gate。
 
 ### 本地定时任务
 
@@ -1098,7 +1121,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 - Gmail：smtp.gmail.com:587
 
 **股票分组发往不同邮箱**（Issue #268，可选）：
-配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变 Telegram、企业微信、Webhook 等其他渠道收到的完整报告。大盘复盘会发往所有配置的邮箱。
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变其他渠道的资产集合。资产研究的 Email/Telegram 使用精简投资者通知投影，完整审计报告仍独立保存；企业微信、Webhook 等渠道继续使用各自既有投影。大盘复盘会发往所有配置的邮箱。
 
 > GitHub Actions 限制：截至 2026-03-29，仓库自带 `00-daily-analysis.yml` 不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此如果你只在仓库 Secrets / Variables 中新增这些变量，而没有修改 workflow 显式映射，它们不会进入运行进程，看起来就像“分组配置不生效”。
 

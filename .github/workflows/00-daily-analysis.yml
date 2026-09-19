@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每个工作日北京时间 19:00 (UTC 11:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 11 * * 1-5'     # 周一到周五，UTC 11:00 = 北京时间 19:00
   
   # 手动触发
   workflow_dispatch:
@@ -17,11 +17,45 @@ on:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
+          - auto-screen   # 手动 AUTO_SCREEN → 同一深析/决策/报告链
+          - research-state-smoke  # 仅人工：空 research-state durability smoke，不执行股票分析
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
+      auto_screen_max_results:
+        description: 'AUTO_SCREEN 最终深析候选数（仅 auto-screen；1-3）'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+      auto_screen_bounded_live:
+        description: 'AUTO_SCREEN 有界真实验收（仅 max_results=1；复用 P0 深析边界）'
+        required: false
+        default: false
+        type: boolean
+      auto_screen_bounded_model:
+        description: 'AUTO_SCREEN 有界真实验收模型（仅 bounded live；一次性覆盖，不持久化）'
+        required: false
+        default: ''
+        type: string
+      research_state_smoke_phase:
+        description: 'research-state-smoke 阶段'
+        required: false
+        default: 'publish-empty'
+        type: choice
+        options:
+          - publish-empty
+          - restore-empty
+      p0_stock_codes:
+        description: 'P0 有界验收代码（仅 stocks-only；1-2 只沪深普通 A 股）'
+        required: false
+        default: ''
+        type: string
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -39,6 +73,7 @@ jobs:
     
     steps:
       - name: 随机延迟（避免固定时间访问）
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke' }}
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 检出代码
@@ -56,11 +91,114 @@ jobs:
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
       
+      - name: 严格校验中国交易日（自动计划）
+        id: strict_cn_schedule_gate
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+
+          allow_analysis = False
+          reason = "calendar_not_proven"
+
+          try:
+              from src.core.trading_calendar import build_market_phase_context
+
+              context = build_market_phase_context(
+                  market="cn",
+                  trigger_source="github_schedule",
+                  analysis_phase="auto",
+              )
+
+              allow_analysis = context.is_trading_day is True
+
+              if allow_analysis:
+                  reason = (
+                      f"phase={context.phase.value};"
+                      f"warnings={','.join(context.warnings)}"
+                  )
+              else:
+                  reason = (
+                      f"skip_phase={context.phase.value};"
+                      f"warnings={','.join(context.warnings)}"
+                  )
+
+          except Exception as exc:
+              reason = f"calendar_exception={type(exc).__name__}"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(
+                  f"allow_analysis={'true' if allow_analysis else 'false'}\n"
+              )
+              output.write(f"reason={reason}\n")
+
+          print(
+              "STRICT_CN_SCHEDULE_GATE "
+              f"allow_analysis={allow_analysis} {reason}"
+          )
+          PY
+
+      - name: 记录自动计划跳过
+        if: ${{ github.event_name == 'schedule' && steps.strict_cn_schedule_gate.outputs.allow_analysis != 'true' }}
+        shell: bash
+        run: |
+          echo "SKIP_NO_PUSH: XSHG trading-day proof is not exactly True."
+          echo "gate_reason=${{ steps.strict_cn_schedule_gate.outputs.reason }}"
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
+
+      - name: 研究状态空检查点 Smoke（仅人工）
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'research-state-smoke' }}
+        env:
+          RESEARCH_STATE_DURABILITY_ENABLED: 'true'
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME || secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          DATABASE_PATH: ./data/research_state_smoke.db
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f data/research_state_smoke.db data/research_state_smoke.db-wal data/research_state_smoke.db-shm
+          PHASE="${{ github.event.inputs.research_state_smoke_phase }}"
+          case "$PHASE" in
+            publish-empty|restore-empty) ;;
+            *)
+              echo "RESEARCH_STATE_SMOKE_BOUNDARY_VIOLATION: unsupported phase=$PHASE" >&2
+              exit 2
+              ;;
+          esac
+          python -m src.services.research_state_runtime "smoke-$PHASE" | tee data/research_state_smoke_receipt.json
+          {
+            echo "### Research-state durability smoke receipt"
+            echo '```json'
+            cat data/research_state_smoke_receipt.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传研究状态 Smoke Receipt
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'research-state-smoke' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: research-state-smoke-receipt-${{ github.run_id }}
+          path: data/research_state_smoke_receipt.json
+          retention-days: 1
       
+      - name: 恢复研究状态（默认关闭）
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke')) }}
+        env:
+          RESEARCH_STATE_DURABILITY_ENABLED: 'true'
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME || secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python -m src.services.research_state_runtime restore
+
       - name: 执行股票分析
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         env:
           # ==========================================
           # AI 配置
@@ -383,6 +521,11 @@ jobs:
           # ==========================================
           # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          # AUTO_SCREEN 第一阶段仅允许 workflow_dispatch，候选数硬限制为 1-3。
+          AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}
+          AUTO_SCREEN_BOUNDED_MODEL: ${{ github.event.inputs.auto_screen_bounded_model || '' }}
+          # 仅 workflow_dispatch 的显式输入可激活 P0 有界验收；自动 schedule 为空。
+          P0_STOCK_CODES: ${{ github.event.inputs.p0_stock_codes || '' }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
@@ -401,6 +544,7 @@ jobs:
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
+          RESEARCH_STATE_DURABILITY_ENABLED: ${{ vars.RESEARCH_STATE_DURABILITY_ENABLED || 'false' }}
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
@@ -410,14 +554,32 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 解析自选股配置：
-          # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
-          # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
-          # 3. 最小默认值
-          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
-            export STOCK_LIST="$STOCK_LIST_CONFIG"
-          elif [ -z "${STOCK_LIST:-}" ]; then
-            export STOCK_LIST="600519"
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          P0_BOUNDED_TRIAL="false"
+
+          if [ "$MODE" = "auto-screen" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen is workflow_dispatch-only" >&2
+            exit 2
+          fi
+
+          # P0 有界验收只消费本次 workflow_dispatch 输入，不读取或覆盖 STOCK_LIST。
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${P0_STOCK_CODES:-}" ]; then
+            if [ "$MODE" != "stocks-only" ]; then
+              echo "P0_BOUNDARY_VIOLATION: p0_stock_codes requires mode=stocks-only" >&2
+              exit 2
+            fi
+            unset STOCK_LIST STOCK_LIST_CONFIG
+            P0_BOUNDED_TRIAL="true"
+          else
+            # 常规路径继续按原优先级解析自选股配置：
+            # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
+            # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
+            # 3. 最小默认值
+            if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
+              export STOCK_LIST="$STOCK_LIST_CONFIG"
+            elif [ -z "${STOCK_LIST:-}" ]; then
+              export STOCK_LIST="600519"
+            fi
           fi
 
           # 处理 LITELLM YAML 配置文件
@@ -430,15 +592,18 @@ jobs:
             echo "✅ LITELLM 配置文件已写入: $LITELLM_CONFIG"
           fi
 
-          # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
-          
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
           echo "🎯 运行模式: $MODE"
-          echo "📊 自选股: $STOCK_LIST"
+          if [ "$P0_BOUNDED_TRIAL" = "true" ]; then
+            echo "📊 P0 有界验收代码: $P0_STOCK_CODES"
+          elif [ "$MODE" = "auto-screen" ]; then
+            echo "📊 AUTO_SCREEN: deterministic / max_results=$AUTO_SCREEN_MAX_RESULTS / strategy=momentum_quality"
+          else
+            echo "📊 自选股: $STOCK_LIST"
+          fi
           echo "📝 报告类型: $REPORT_TYPE"
           echo ""
           echo "=========================================="
@@ -508,18 +673,52 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
+          AUTO_SCREEN_BOUNDED_LIVE_ARG=""
+          if [ "${{ github.event.inputs.auto_screen_bounded_live }}" = "true" ]; then
+            if [ "$MODE" != "auto-screen" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires mode=auto-screen" >&2
+              exit 2
+            fi
+            if [ "$AUTO_SCREEN_MAX_RESULTS" != "1" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_max_results=1" >&2
+              exit 2
+            fi
+            if [ -z "${AUTO_SCREEN_BOUNDED_MODEL:-}" ]; then
+              echo "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_bounded_model" >&2
+              exit 2
+            fi
+            AUTO_SCREEN_BOUNDED_LIVE_ARG="--auto-screen-bounded-live"
+            echo "🧪 AUTO_SCREEN 有界真实验收：1 candidate / exact model / P0 model-effect boundary；行情数据源 fallback 仍可用"
+          fi
+
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
+          elif [ "$MODE" = "auto-screen" ]; then
+            python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" $AUTO_SCREEN_BOUNDED_LIVE_ARG --no-market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
+            if [ "$P0_BOUNDED_TRIAL" = "true" ]; then
+              python main.py --p0-bounded-trial --stocks "$P0_STOCK_CODES" --no-market-review $FORCE_RUN_ARG
+            else
+              python main.py --no-market-review $FORCE_RUN_ARG
+            fi
           else
             python main.py $FORCE_RUN_ARG
           fi
       
+      - name: 发布研究状态（默认关闭）
+        if: ${{ success() && (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke')) }}
+        env:
+          RESEARCH_STATE_DURABILITY_ENABLED: 'true'
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME || secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python -m src.services.research_state_runtime publish
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         with:
           name: analysis-reports-${{ github.run_number }}
           path: |
@@ -528,7 +727,7 @@ jobs:
           retention-days: 30
       
       - name: 显示运行结果
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         run: |
           echo ""
           echo "=========================================="
@@ -544,4 +743,19 @@ jobs:
           if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+          fi
+          echo ""
+          RECEIPT_LINE="$(grep -h 'AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=' logs/stock_analysis_*.log 2>/dev/null | tail -1 || true)"
+          if [ -n "$RECEIPT_LINE" ]; then
+            RECEIPT_JSON="${RECEIPT_LINE#*AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=}"
+            echo "AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=$RECEIPT_JSON"
+            {
+              echo "### AUTO_SCREEN Acceptance Receipt"
+              echo '```json'
+              printf '%s\n' "$RECEIPT_JSON"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ github.event.inputs.auto_screen_bounded_live }}" = "true" ]; then
+            echo "AUTO_SCREEN_ACCEPTANCE_RECEIPT_MISSING: bounded live requires machine-readable receipt" >&2
+            exit 2
           fi

@@ -18,6 +18,7 @@ from src.core.market_review_lock import (
     try_acquire_market_review_lock,
 )
 from src.report_language import normalize_report_language
+from src.schemas.market_light import MarketLightSnapshot
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     reset_run_diagnostic_context,
@@ -72,6 +73,7 @@ class DailyMarketContext:
     history_id: Optional[int] = None
     query_id: Optional[str] = None
     full_report: Optional[str] = None
+    market_light: Optional[Dict[str, Any]] = None
 
     def to_safe_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -629,6 +631,7 @@ class DailyMarketContextService:
             history_id=history_id if isinstance(history_id, int) else None,
             query_id=query_id if isinstance(query_id, str) and query_id else None,
             full_report=full_report,
+            market_light=_validated_market_light_payload(scoped_payload.get("market_light")),
         )
 
 
@@ -782,6 +785,15 @@ def _coerce_date(value: Any) -> Optional[date]:
         except ValueError:
             return None
     return None
+
+
+def _validated_market_light_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return MarketLightSnapshot.model_validate(dict(value)).model_dump(mode="json")
+    except Exception:
+        return None
 
 
 def _payload_trade_date(payload: Mapping[str, Any], region: str) -> Optional[date]:

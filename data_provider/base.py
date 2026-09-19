@@ -2183,6 +2183,13 @@ class DataFetcherManager:
                 chip = self._call_fetcher_method(fetcher, 'get_chip_distribution', stock_code)
                 latency_ms = int((time.time() - attempt_start) * 1000)
                 if _is_meaningful_chip_distribution(chip):
+                    # Bind the manager-selected provider identity to the returned
+                    # snapshot. Some provider constructors rely on the dataclass
+                    # default, which is not authoritative after fallback selection.
+                    try:
+                        chip.source = fetcher_name
+                    except Exception:
+                        pass
                     record_provider_run(
                         data_type="chip",
                         provider=fetcher_name,

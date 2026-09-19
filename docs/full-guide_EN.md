@@ -642,6 +642,7 @@ python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
+python main.py --auto-screen --auto-screen-max-results 1  # GitHub workflow_dispatch context only; 1-3 candidates
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
@@ -680,8 +681,10 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 ```yaml
 schedule:
   # UTC time, Beijing time = UTC + 8
-  - cron: '0 10 * * 1-5'   # Monday to Friday 18:00 (Beijing Time)
+  - cron: '0 11 * * 1-5'   # Monday to Friday 19:00 (Beijing Time, current default)
 ```
+
+The current GitHub Actions schedule also passes through the strict CN trading-day gate, so weekends and official China market holidays do not enter analysis.
 
 Common time reference:
 
@@ -690,8 +693,27 @@ Common time reference:
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
 | 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
+| 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
+
+#### Bounded manual AUTO_SCREEN entry
+
+`mode=auto-screen` is manual `workflow_dispatch` only. Set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). Screening only decides which candidates enter deep analysis: LLM ranking is disabled on this path, the bounded candidates are forwarded to the existing `run_full_analysis` / `StockAnalysisPipeline` chain, and the existing canonical factor/decision owner remains the final public-action authority. Screening score is not a win rate or calibrated probability. This manual acceptance entry does not promote the existing scheduled run to AUTO_SCREEN.
+
+A one-off real acceptance run may explicitly set `auto_screen_bounded_live=true`, but only with `auto_screen_max_results=1`, and `auto_screen_bounded_model` must provide the exact model ID approved for that run. Screening remains deterministic with `use_llm=False`; once the single candidate is selected, deep analysis temporarily reuses the existing P0 process-local boundary: one worker, no Agent/search/Router, zero model fallback/retry, parameter recovery, or integrity-completion retry, and direct LiteLLM with `num_retries=0`. Existing deterministic market-data provider retry/fallback may still occur to obtain market data and is outside the model-effect boundary. This bounded-live acceptance forcibly suppresses outbound notification, reuses existing `selected_candidates` plus the same canonical `AnalysisResult` to emit a sanitized `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON` into the logs and GitHub Step Summary, and still retains the full audit report/Artifact. Email/Telegram delivery has already been validated independently and is not repeated on every AUTO_SCREEN acceptance run. The switch and model input are one-shot `workflow_dispatch` values, are not persisted, and do not change ordinary AUTO_SCREEN, the existing 19:00 schedule, or its production notifications.
+
+#### P0 bounded specified-stock acceptance
+
+`workflow_dispatch` also exposes the optional `p0_stock_codes` input. P0 bounded acceptance is activated only when `mode=stocks-only` and that input is non-empty. Scheduled runs and manual runs without the input keep the existing path.
+
+- The input accepts only one or two Shanghai/Shenzhen ordinary A-shares verified by the checked-in stock index. ETFs, indices, non-CN assets, duplicates, and exchange conflicts are rejected before analysis.
+- The per-run input neither reads nor overwrites `STOCK_LIST`, and it does not change automatic schedules, watchlists, or AUTO_SCREEN.
+- P0 fixes one worker, non-Agent execution, one model, and non-streaming transport. Each run allows at most two primary model requests with a 4,096-token output ceiling and performs no report-completion retry, model fallback, transport retry, or parameter recovery.
+- P0 does not initialize news or social search; the Tavily/SearXNG and other search-call ceiling is zero.
+- Every target must succeed exactly once. The pipeline then renders two projections from the same canonical `AnalysisResult` objects: a detailed audit report for local/Artifact retention and a compact `investor-brief-v1` investor notification for the single Email. They share one canonical evidence/decision authority but are not required to be byte-identical. Any boundary, target, canonical-consistency, or required-projection failure produces no notification and a non-zero result.
+- The deterministic `stock_trend_quality_pullback_v1` `canonical_decision` is the sole public action authority. P0 emits only `WAIT/watch` or `PASS/avoid`; the LLM is explanation-only and cannot create or override BUY/HOLD/EXIT.
+
+For an explicitly authorized manual acceptance run on a non-trading day, `force_run=true` may be used for that `workflow_dispatch` only; it does not alter the automatic schedule's strict trading-day gate.
 
 ### Local Scheduled Tasks
 
@@ -964,7 +986,7 @@ Supported email providers:
 - Gmail: smtp.gmail.com:587
 
 **Send different stock groups to different email recipients** (Issue #268, optional):
-Configure `STOCK_GROUP_N` and `EMAIL_GROUP_N` to route different stock groups to different inboxes. `STOCK_LIST` still defines the actual analysis scope, so each `STOCK_GROUP_N` should be a subset of `STOCK_LIST`. This only changes email recipients; Telegram, WeChat, Webhook, and other channels still receive the full report for the entire `STOCK_LIST`. Market review emails are sent to all configured group recipients.
+Configure `STOCK_GROUP_N` and `EMAIL_GROUP_N` to route different stock groups to different inboxes. `STOCK_LIST` still defines the actual analysis scope, so each `STOCK_GROUP_N` should be a subset of `STOCK_LIST`. This only changes email recipients and does not change the asset set on other channels. Asset-research Email/Telegram use the compact investor-notification projection while the detailed audit report is retained separately; WeChat, Webhook, and other channels keep their existing projections. Market review emails are sent to all configured group recipients.
 
 > GitHub Actions limitation: as of 2026-03-29, the repository's default `00-daily-analysis.yml` does not auto-import arbitrary numbered `STOCK_GROUP_N` / `EMAIL_GROUP_N` variables. If you only add them in repository Secrets / Variables without extending the workflow `env:` block, they will not reach the runtime process.
 

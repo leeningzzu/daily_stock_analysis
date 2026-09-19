@@ -16,7 +16,15 @@ from sqlalchemy.sql import func
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import Config
-from src.storage import Base, CURRENT_SCHEMA_VERSION, DatabaseManager, DatabaseSchemaMigration, StockDaily
+from src.storage import (
+    Base,
+    CURRENT_SCHEMA_VERSION,
+    DatabaseManager,
+    DatabaseSchemaMigration,
+    PITDatasetManifestRecord,
+    PredictionOutcomeRecord,
+    StockDaily,
+)
 
 class TestStorage(unittest.TestCase):
 
@@ -53,7 +61,7 @@ class TestStorage(unittest.TestCase):
             return unique_indexes
 
     def test_legacy_intelligence_items_url_unique_index_rebuilds_without_collision(self) -> None:
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
 
         try:
@@ -163,6 +171,130 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_prediction_ledger_pit_schema_migration_is_nullable_and_idempotent(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = os.path.join(temp_dir.name, "legacy_prediction_ledger.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE prediction_ledger ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "prediction_hash VARCHAR(64) UNIQUE)"
+                )
+                conn.execute(
+                    "INSERT INTO prediction_ledger (prediction_hash) VALUES (?)",
+                    ("a" * 64,),
+                )
+
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            db._ensure_prediction_ledger_pit_schema()
+            db._ensure_prediction_ledger_pit_schema()
+
+            expected = {
+                "decision_timezone",
+                "asset_identity_hash",
+                "asset_identity_json",
+                "data_snapshot_identity",
+                "selection_source",
+                "selection_context_hash",
+                "selection_context_json",
+            }
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(prediction_ledger)").fetchall()
+                }
+                values = conn.execute(
+                    "SELECT decision_timezone, asset_identity_hash, data_snapshot_identity, "
+                    "selection_source, selection_context_hash FROM prediction_ledger"
+                ).fetchone()
+            self.assertTrue(expected.issubset(columns))
+            self.assertEqual(values, (None, None, None, None, None))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_fresh_schema_has_append_only_prediction_outcome_identity(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        from sqlalchemy import inspect as sqlalchemy_inspect
+
+        inspector = sqlalchemy_inspect(db._engine)
+        unique_constraints = inspector.get_unique_constraints("prediction_outcomes")
+        indexes = {item["name"] for item in inspector.get_indexes("prediction_outcomes")}
+        columns = {item["name"] for item in inspector.get_columns("prediction_outcomes")}
+
+        self.assertTrue(
+            any(item["column_names"] == ["outcome_hash"] for item in unique_constraints)
+        )
+        self.assertIn("ix_prediction_outcome_lineage", indexes)
+        self.assertIn("ix_prediction_outcomes_execution_identity_hash", indexes)
+        self.assertIn("execution_identity_hash", columns)
+        self.assertIn("execution_identity_json", columns)
+        self.assertIsNotNone(PredictionOutcomeRecord.__table__)
+        DatabaseManager.reset_instance()
+
+    def test_prediction_outcome_execution_schema_migration_is_nullable_and_idempotent(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = os.path.join(temp_dir.name, "legacy_prediction_outcome.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE prediction_outcomes ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "outcome_hash VARCHAR(64))"
+                )
+                conn.execute(
+                    "INSERT INTO prediction_outcomes (outcome_hash) VALUES (?)",
+                    ("b" * 64,),
+                )
+
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            db._ensure_prediction_outcome_execution_schema()
+            db._ensure_prediction_outcome_execution_schema()
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(prediction_outcomes)").fetchall()
+                }
+                indexes = {
+                    row[1]
+                    for row in conn.execute("PRAGMA index_list(prediction_outcomes)").fetchall()
+                }
+                values = conn.execute(
+                    "SELECT execution_identity_hash, execution_identity_json "
+                    "FROM prediction_outcomes"
+                ).fetchone()
+            self.assertIn("execution_identity_hash", columns)
+            self.assertIn("execution_identity_json", columns)
+            self.assertIn("ix_prediction_outcomes_execution_identity_hash", indexes)
+            self.assertEqual(values, (None, None))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_fresh_schema_has_immutable_pit_dataset_manifest_identity(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        from sqlalchemy import inspect as sqlalchemy_inspect
+
+        inspector = sqlalchemy_inspect(db._engine)
+        unique_constraints = inspector.get_unique_constraints("pit_dataset_manifests")
+        indexes = {item["name"] for item in inspector.get_indexes("pit_dataset_manifests")}
+
+        self.assertTrue(
+            any(item["column_names"] == ["dataset_hash"] for item in unique_constraints)
+        )
+        self.assertIn("ix_pit_dataset_manifest_strategy_frozen", indexes)
+        self.assertIn("ix_pit_dataset_manifest_admission_frozen", indexes)
+        self.assertIsNotNone(PITDatasetManifestRecord.__table__)
+        DatabaseManager.reset_instance()
+
     def test_schema_migration_record_is_idempotent(self):
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -181,7 +313,7 @@ class TestStorage(unittest.TestCase):
 
     def test_fresh_decision_signal_schema_has_profile_indexes(self):
         DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(temp_dir.name, "fresh_decision_profile.db")
 
         try:
@@ -221,7 +353,7 @@ class TestStorage(unittest.TestCase):
 
     def test_decision_signal_profile_migration_adds_column_indexes_and_closed_stats(self):
         DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(temp_dir.name, "legacy_decision_profile.db")
         deeply_nested_json = "[" * 10_000 + "]" * 10_000
 
@@ -361,7 +493,7 @@ class TestStorage(unittest.TestCase):
 
     def test_decision_signal_profile_migration_runs_when_column_already_exists(self):
         DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(temp_dir.name, "existing_decision_profile.db")
 
         try:
@@ -686,6 +818,34 @@ class TestStorage(unittest.TestCase):
 
         self.assertEqual(deleted, 2)
         self.assertEqual(db.get_agent_provider_turns("trace-hidden"), [])
+
+        DatabaseManager.reset_instance()
+
+    def test_conversation_message_order_is_stable_when_timestamps_tie(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        user_id = db.save_conversation_message("stable-order", "user", "question")
+        assistant_id = db.save_conversation_message("stable-order", "assistant", "answer")
+
+        with db._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE conversation_messages SET created_at = ? WHERE id IN (?, ?)",
+                ("2026-01-01 00:00:00.000000", user_id, assistant_id),
+            )
+
+        expected = [("user", "question"), ("assistant", "answer")]
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_visible_conversation_messages("stable-order")],
+            expected,
+        )
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_conversation_history("stable-order")],
+            expected,
+        )
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_conversation_messages("stable-order")],
+            expected,
+        )
 
         DatabaseManager.reset_instance()
 
@@ -1034,7 +1194,7 @@ class TestStorage(unittest.TestCase):
 
     def test_save_daily_data_sqlite_concurrent_same_code_date_counts_only_new_rows(self):
         DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(temp_dir.name, "sqlite_daily_concurrency.db")
         db = DatabaseManager(db_url=f"sqlite:///{db_path}")
 
@@ -1090,8 +1250,8 @@ class TestStorage(unittest.TestCase):
 
             self.assertEqual(total, 1)
         finally:
-            temp_dir.cleanup()
             DatabaseManager.reset_instance()
+            temp_dir.cleanup()
 
 if __name__ == '__main__':
     unittest.main()

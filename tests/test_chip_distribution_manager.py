@@ -74,6 +74,7 @@ def test_manager_skips_placeholder_chip_distribution_and_tries_next_fetcher():
     chip, diagnostics, flow_events = _run_with_chip_diagnostics(manager)
 
     assert chip is valid_chip
+    assert chip.source == "ValidFetcher"
     assert diagnostics is not None
     provider_runs = diagnostics["provider_runs"]
     assert [run["data_type"] for run in provider_runs] == ["chip", "chip"]
@@ -140,6 +141,7 @@ def test_manager_records_failed_chip_attempt_and_falls_back_to_next_fetcher():
     chip, diagnostics, flow_events = _run_with_chip_diagnostics(manager)
 
     assert chip is valid_chip
+    assert chip.source == "FallbackFetcher"
     assert failing_fetcher.calls == 1
     assert fallback_fetcher.calls == 1
     assert diagnostics is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import os
 import sys
 from types import SimpleNamespace
 import unittest
@@ -41,7 +42,11 @@ class MainPortfolioTest(unittest.TestCase):
         args = SimpleNamespace(portfolio="futu")
         error = FutuPortfolioError("OpenD unavailable")
 
-        with patch.object(
+        with patch.dict(
+            os.environ,
+            {"RESEARCH_STATE_DURABILITY_ENABLED": "false"},
+            clear=False,
+        ), patch.object(
             main,
             "run_full_analysis",
             side_effect=error,
@@ -53,6 +58,48 @@ class MainPortfolioTest(unittest.TestCase):
             )
 
         runner.assert_called_once_with(config, args, ["600519"])
+
+
+    def test_analysis_lock_uses_failure_propagating_runner_when_durability_enabled(self):
+        config = SimpleNamespace()
+        args = SimpleNamespace(portfolio=None)
+
+        with patch.dict(
+            os.environ,
+            {"RESEARCH_STATE_DURABILITY_ENABLED": "true"},
+            clear=False,
+        ), patch(
+            "src.services.runtime_scheduler.run_with_global_analysis_lock",
+        ) as run_with_lock:
+            main._run_analysis_with_runtime_scheduler_lock(
+                config,
+                args,
+                ["600519"],
+            )
+
+        run_with_lock.assert_called_once_with(
+            task_runner=main.run_scheduled_analysis,
+            config=config,
+            args=args,
+            stock_codes=["600519"],
+            blocking=True,
+        )
+
+
+    def test_run_scheduled_analysis_forces_failure_propagation(self):
+        config = SimpleNamespace()
+        args = SimpleNamespace(portfolio=None)
+
+        with patch.object(main, "run_full_analysis", return_value=True) as runner:
+            result = main.run_scheduled_analysis(config, args, ["600519"])
+
+        self.assertTrue(result)
+        runner.assert_called_once_with(
+            config,
+            args,
+            ["600519"],
+            raise_errors=True,
+        )
 
     def test_run_full_analysis_propagates_futu_portfolio_load_failure(self):
         config = SimpleNamespace()

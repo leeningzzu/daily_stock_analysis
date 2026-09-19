@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] PredictionOutcome research execution realism 增加 source-neutral `execution-identity-v1`：以 fail-closed XSHG exact-session 解析替代“后续三条日线”假设，calendar 未证明时阻断、已完成 session 缺 bar/执行证据 UNKNOWN/entry 或 exit hard-nonfill 时保持 `UNLABELABLE`，并以 nullable execution identity hash/json 保存可修正的后验执行证据；engine 升级为 v3，旧 outcome 不回写，provider 权利与 durable bytes 继续独立准入。
+- [改进] PIT research cost identity 升级为 v2：在既有 PredictionOutcome/BacktestEngine/PITDataset 路线上加入交易所与规则有效期、结构化佣金口径、冻结 reference notional 和逐边绝对最低佣金，历史区间或资产身份不匹配时 fail-closed；PredictionOutcome engine 升级为 v2 且不改写旧 outcome，同时新增 `EXECUTION_REALISM_NOT_APPROVED` 训练门，将涨跌停/停牌/next-open 等真实成交约束继续留在独立 pre-training milestone。
+- [新功能] GitHub Actions 新增仅人工 `stocks-only` 可激活的 P0 有界指定股票验收：独立接收 1–2 个沪深普通 A 股，不读取或覆盖 `STOCK_LIST`，禁用搜索、Agent、重试和模型回退，将主模型请求限制为每轮最多 2 次，并在 deterministic WAIT/PASS canonical action 一致性通过后只发送一封中文 simple 汇总 Email。
+- [新功能] GitHub Actions / CLI 新增仅 `workflow_dispatch` 可激活的有界 `AUTO_SCREEN` 手动入口：`mode=auto-screen`，最终进入深析的候选数限制为 1–3（默认 1），固定复用现有 `momentum_quality` deterministic screening 与既有 shared deep-analysis / canonical decision / report consumer；不改变现有定时计划、`SPECIFIED_CODES` 或 P0 路径。
+- [修复] 为 `AUTO_SCREEN` 的一次性真实验收增加显式 bounded-live 适配层：仅 `max_results=1` 时可启用，并要求本次提供 exact model；筛选完成后复用既有 P0 深析硬边界，从而关闭 Agent/搜索/Router/模型 fallback/完整性补全重试，保留单 worker、同一 canonical report consumer 与单封 compact Email；普通 AUTO_SCREEN 和 19:00 自动计划不受影响。
+- [修复] 将 AUTO_SCREEN bounded-live 的安全边界与已经完成的 P0 Email 验收解耦：该一次性验收仍复用 P0 的单 worker、无搜索/Agent/Router/模型 fallback/retry 深析边界，但强制禁止 outbound notification，只保存完整审计报告/Artifact；行情数据源自身的确定性 retry/fallback 不属于模型效果边界；stocks-only P0 与正常 19:00 Production 通知行为保持不变。
+- [修复] AUTO_SCREEN bounded-live 复用既有 `selected_candidates` 与 canonical decision 生成脱敏 machine-readable acceptance receipt，并投影到 GitHub Step Summary，避免后续验收默认依赖人工搬运 Artifact；同时将 MACD 零轴上下状态改为明确的 MACD 动量文案，避免与 MA“多头/空头排列”混淆，并明确 `retry/fallback=0` 仅指模型效果边界、行情数据源仍可执行确定性重试/降级。
+- [改进] AnalysisContextPack 的 `daily_bars` 复用现有 market-phase completed-session 语义与 stored daily bar 内容生成 deterministic evidence identity：仅 exact bar date 与权威 `effective_daily_bar_date` 一致且交易日历可证明时标记 READY；旧 bar / 新于 completed date / 缺源 / 无法证明分别显式降级为 stale / partial / missing / unknown，并用稳定 SHA-256 绑定实际使用的日线内容，不新增数据库或数据源。
+- [修复] Daily Evidence Identity 与既有 `daily_bars` / DataQuality 可用性语义解耦：identity 继续对缺 source/phase/date 保持 MISSING/UNKNOWN fail-closed，但缺少新增证明元数据不再追溯性把 legacy consumer 降为 missing；只有已证明 STALE/PARTIAL 才覆盖旧 block status，避免辅助 identity 引入 Prompt confidence cap 回归。
+- [改进] MUE V1 首版 Market/Sector Regime 复用既有 MarketLight 与 MarketStructure 结构化证据，不新增 provider/DB/scheduler：完整 red MarketLight 可对个股 canonical decision 施加风险否决；yellow、partial red 或 cooling 板块只降级/提示，green/加速板块只作许可或确认，不能独立升级 BUY；缺失与不支持保持显式 UNKNOWN/PARTIAL。
+- [改进] MUE V1 首版 Trend/Relative Strength 将 canonical 日线趋势与盘中 realtime augmentation/短历史 MA fallback 解耦，并复用现有 ETF 日线数据源以 `510300` 沪深300ETF作为显式 benchmark proxy：只有 benchmark 具备 61 个 completed observations、股票存在相同起止日期且端点数据源与 benchmark provider 对齐时才 READY；首轮日线 warm-up 从 30 扩为 120 天但不增加请求次数，RS 明确为 price-return proxy，缺失或跨源证据继续 fail-closed/降级，且不独立升级 BUY 或形成新 hard veto。
+- [改进] MUE V1 首版 Supply-Demand/Volume-Price 复用现有 completed 日线与量能原语，增加 20 日相对量、方向成交量平衡和 CMF20 的纯确定性 evidence context；至少 21 根 completed bars 且窗口数据源一致才 READY，缺失/混源降级，不使用实时换手率或供应商资金流作为核心真值，不推断“主力吸筹/出货”，也不新增第二个量价 hard veto。
+- [改进] MUE V1 首版 Cost Structure 复用现有 ChipDistribution 与 completed 日线：provider 筹码只作为带来源/日期边界的 current-only 估算快照，历史层以 20/60 日 HLC3×成交量 rolling reference price 提供 PIT-safe 成本参考；缺失/混源/非正成交量 fail-closed，明确不冒充真实持仓成本、传统日内 VWAP 或 Volume Profile，不新增 BUY/hard-veto authority，并继续延后 AVWAP/POC/VAH/VAL 与历史 provider-chip replay。
+- [改进] MUE V1 首版 Price Structure 复用 completed 日线与既有支撑/压力能力，新增可回放的 confirmed Pivot/Swing primitive：分离 origin_time 与 confirmed_at，目标日期裁剪阻止未来确认回填，并基于已确认层级形成支撑/压力、突破、回踩与失败突破状态；缺失/混源/warm-up/非法 OHLC fail-closed，不新增 BUY/hard-veto authority，杯柄/VCP/双底继续留给后续 Pattern/Trigger。
+- [改进] MUE V1 首版 Volatility/Momentum 复用 completed 日线、既有 MACD/RSI 与 confirmed Pivot/Swing，结构化输出 20 日实现波动率、True Range 简单均值比例、ROC20/ROC60 与同一 swing 上归一的 confirmed MACD/RSI 背离；同时增加收益自相关、5 日方差尺度比、绝对收益自相关、偏度/超额峰度等观察性过程诊断，但不执行“市场世界”硬分类、自动策略切换、独立 BUY/hard-veto，也不把现有 TR-SMA 指标冒充 Wilder ATR，ADF/OU/GARCH/HMM 继续延后。
+- [改进] MUE V1 首版 Pattern/Trigger 仅复用 confirmed Pivot/Swing、Price Structure 的 completed-close breakout/retest/failed-breakout 与既有量价证据，版本化识别杯形基底、O'Neil continuation 双底及 VCP/平坦基底/紧密整理；形成/确认/失败状态保持 target-date prefix 可回放，未来确认不得回填历史，固定形态阈值仅作为可审计候选参数，不新增外部 TA 依赖、独立 BUY/hard-veto、机构意图推断或第二套 breakout owner。
+- [改进] MUE V1 增加 coverage-aware Multi-timeframe Structure foundation：选定资产按需请求约 1100 个日历日的 completed daily history，以 26 根 completed higher-timeframe bars 为描述性趋势 warm-up 下限，并由交易日历确定性聚合已完成周/月 OHLCV；复用现有 StockTrendAnalyzer 与 confirmed Pivot/Swing，未完成周/月、历史不足及 60m/30m/15m/5m 均 fail-closed。当前 StockDaily 尚未持久化 adjustment basis，因此显式禁止将该运行内历史宣称为可跨运行 canonical persistence；不新增行情源、数据库、第二 bar/decision/report engine、独立 BUY authority 或指标重复计票。
+- [新功能] 在既有 AnalysisHistory / DecisionSignal 后置写入链上增加 append-only `Prediction Ledger V1` 基础：只有 canonical decision 与 DecisionSignal identity/horizon 均可证明时才冻结结构化 factor-decision 证据、策略/动作/计划与版本/hash 身份，同内容重放不改写旧行，历史报告清理不级联删除账本；当前 available-at、adjustment basis、universe snapshot、timezone 与 durable store 未绑定时显式标记 PIT 不合格，不提前训练模型或引入第二数据库/R2。
+- [改进] 增加 PIT research foundation Slice A：Prediction Ledger V2 以 nullable/backward-compatible 字段冻结决策时区、A 股 asset identity、实际 consumed completed-history hash 与 AUTO_SCREEN/SPECIFIED_CODES research route；新增同 SQLite 的 append-only PredictionOutcome sidecar，复用既有 BacktestEngine/StockRepository，以显式 cost identity 评估 next-open→第三个 forward session close 的 Meta TAKE/PASS 主标签，并以 supersedes/correction reason 保留 terminal correction lineage。该 foundation 不安装 Qlib/sklearn/LightGBM、不复制 raw history、不内置未经 currentness 核验的费用参数，也不改变现有 DecisionSignalOutcome 或 Production canonical action。
+- [改进] 增加 immutable PIT Dataset manifest foundation：复用 Prediction Ledger / PredictionOutcome 身份，以 XSHG session 分组的 60/20/20 chronological split、label interval + available-at purge 与 SEALED FINAL_TEST 记录训练样本分配；manifest 不复制 feature/label 值，LOCAL_DB_ONLY、durable bytes、正式 cost identity 或 PIT gap 未闭合时保持 TRAINING_ADMISSION=BLOCKED，不提前安装或训练 ML 模型。
+- [改进] 增加默认关闭的跨运行 research-state durability binding：每日分析在显式启用后先从 immutable package chain restore 到现有 DSA SQLite，仅在分析 step 成功后 publish；缺失/非法 R2 配置、restore 失败、运行失败或取消均 fail-closed，不新增第二数据库/调度器，默认未启用时保持零 R2 调用。
+- [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制
 - [修复] 飞书交互机器人在 `FEISHU_DOMAIN=lark` 时让 Stream 长连接与消息回复统一使用 Lark 国际版 API 域名，避免 SDK 默认连接飞书国内域名并返回 `Incorrect domain name`（fixes #937）。
@@ -36,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [文档] FAQ 补充 macOS 桌面应用被 Gatekeeper quarantine 阻止启动时的受信任安装包临时放行步骤（refs #2113）。
+
+- [测试] 为默认关闭的 research-state durability 增加仅人工 `research-state-smoke` 空检查点验收入口：publish/restore 两阶段只处理 0 行 Ledger/Outcome/PIT 状态，限制 64 KiB package，并输出 generation 与 package/manifest SHA 的 machine-readable receipt；普通定时/股票分析、报告与通知路径保持不变。
 
 ## [3.29.0] - 2026-08-02
 

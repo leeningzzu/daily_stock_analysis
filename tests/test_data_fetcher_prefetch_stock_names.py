@@ -189,6 +189,13 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertTrue(success)
         self.assertIsNone(error)
         pipeline.fetcher_manager.get_stock_name.assert_called_once_with("600519", allow_realtime=False)
+        fetch_args = pipeline.fetcher_manager.get_daily_data.call_args
+        self.assertEqual(fetch_args.args, ("600519",))
+        self.assertIn("start_date", fetch_args.kwargs)
+        self.assertIn("end_date", fetch_args.kwargs)
+        start = pd.Timestamp(fetch_args.kwargs["start_date"]).date()
+        end = pd.Timestamp(fetch_args.kwargs["end_date"]).date()
+        self.assertEqual((end - start).days, 1100)
 
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):
         fetcher = PytdxFetcher(hosts=[])

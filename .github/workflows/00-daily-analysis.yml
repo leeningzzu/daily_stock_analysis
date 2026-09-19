@@ -18,6 +18,7 @@ on:
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
           - auto-screen   # 手动 AUTO_SCREEN → 同一深析/决策/报告链
+          - research-state-smoke  # 仅人工：空 research-state durability smoke，不执行股票分析
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
@@ -42,6 +43,14 @@ on:
         required: false
         default: ''
         type: string
+      research_state_smoke_phase:
+        description: 'research-state-smoke 阶段'
+        required: false
+        default: 'publish-empty'
+        type: choice
+        options:
+          - publish-empty
+          - restore-empty
       p0_stock_codes:
         description: 'P0 有界验收代码（仅 stocks-only；1-2 只沪深普通 A 股）'
         required: false
@@ -64,6 +73,7 @@ jobs:
     
     steps:
       - name: 随机延迟（避免固定时间访问）
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke' }}
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 检出代码
@@ -139,9 +149,46 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
+
+      - name: 研究状态空检查点 Smoke（仅人工）
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'research-state-smoke' }}
+        env:
+          RESEARCH_STATE_DURABILITY_ENABLED: 'true'
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME || secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          DATABASE_PATH: ./data/research_state_smoke.db
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f data/research_state_smoke.db data/research_state_smoke.db-wal data/research_state_smoke.db-shm
+          PHASE="${{ github.event.inputs.research_state_smoke_phase }}"
+          case "$PHASE" in
+            publish-empty|restore-empty) ;;
+            *)
+              echo "RESEARCH_STATE_SMOKE_BOUNDARY_VIOLATION: unsupported phase=$PHASE" >&2
+              exit 2
+              ;;
+          esac
+          python -m src.services.research_state_runtime "smoke-$PHASE" | tee data/research_state_smoke_receipt.json
+          {
+            echo "### Research-state durability smoke receipt"
+            echo '```json'
+            cat data/research_state_smoke_receipt.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传研究状态 Smoke Receipt
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'research-state-smoke' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: research-state-smoke-receipt-${{ github.run_id }}
+          path: data/research_state_smoke_receipt.json
+          retention-days: 1
       
       - name: 恢复研究状态（默认关闭）
-        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'market-only') }}
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke')) }}
         env:
           RESEARCH_STATE_DURABILITY_ENABLED: 'true'
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
@@ -151,7 +198,7 @@ jobs:
         run: python -m src.services.research_state_runtime restore
 
       - name: 执行股票分析
-        if: ${{ github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true' }}
+        if: ${{ (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         env:
           # ==========================================
           # AI 配置
@@ -660,7 +707,7 @@ jobs:
           fi
       
       - name: 发布研究状态（默认关闭）
-        if: ${{ success() && (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'market-only') }}
+        if: ${{ success() && (github.event_name != 'schedule' || steps.strict_cn_schedule_gate.outputs.allow_analysis == 'true') && vars.RESEARCH_STATE_DURABILITY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode != 'market-only' && github.event.inputs.mode != 'research-state-smoke')) }}
         env:
           RESEARCH_STATE_DURABILITY_ENABLED: 'true'
           R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
@@ -671,7 +718,7 @@ jobs:
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         with:
           name: analysis-reports-${{ github.run_number }}
           path: |
@@ -680,7 +727,7 @@ jobs:
           retention-days: 30
       
       - name: 显示运行结果
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.mode != 'research-state-smoke') }}
         run: |
           echo ""
           echo "=========================================="

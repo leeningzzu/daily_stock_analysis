@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [文档] FAQ 补充 macOS 桌面应用被 Gatekeeper quarantine 阻止启动时的受信任安装包临时放行步骤（refs #2113）。
 
+- [测试] 为默认关闭的 research-state durability 增加仅人工 `research-state-smoke` 空检查点验收入口：publish/restore 两阶段只处理 0 行 Ledger/Outcome/PIT 状态，限制 64 KiB package，并输出 generation 与 package/manifest SHA 的 machine-readable receipt；普通定时/股票分析、报告与通知路径保持不变。
+
 ## [3.29.0] - 2026-08-02
 
 ### 发布亮点

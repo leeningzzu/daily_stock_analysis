@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,12 +10,16 @@ import pytest
 from sqlalchemy import create_engine
 
 import src.services.research_state_runtime as runtime
+from src.services.research_state_package_chain import FilesystemObjectStore, PACKAGE_PREFIX
 from src.services.research_state_runtime import (
     R2RuntimeConfig,
     ResearchStateBootstrapConflict,
     ResearchStateRuntimeConfigError,
+    ResearchStateSmokeBoundaryError,
     durability_enabled,
+    publish_empty_smoke_state,
     publish_runtime_state,
+    restore_empty_smoke_state,
     restore_runtime_state,
 )
 from src.storage import Base
@@ -253,6 +259,91 @@ def test_publish_requires_exact_source_sha_when_state_exists(
         )
 
 
+def test_empty_smoke_publish_then_restore_is_identity_bound(tmp_path: Path) -> None:
+    store = FilesystemObjectStore(tmp_path / "objects")
+    publish_db = tmp_path / "publish.db"
+    publish_env = dict(ENABLED_ENV, DATABASE_PATH=str(publish_db))
+
+    published = publish_empty_smoke_state(
+        env=publish_env,
+        store_factory=lambda config: store,
+        ensure_schema=_ensure,
+    )
+    zero_counts = {
+        "prediction_ledger": 0,
+        "prediction_outcomes": 0,
+        "pit_dataset_manifests": 0,
+    }
+    assert published.disposition == "PUBLISHED_EMPTY_CHECKPOINT"
+    assert published.generation == 1
+    assert dict(published.table_counts) == zero_counts
+    assert published.manifest_key.endswith("00000000000000000001.json")
+    assert published.package_key.startswith(f"{PACKAGE_PREFIX}/")
+    assert published.source_code_sha == "a" * 40
+    assert published.rights_classification == "NO_CONDITIONAL_VALUES"
+    assert 0 < published.package_bytes <= runtime.SMOKE_MAX_PACKAGE_BYTES
+
+    restore_db = tmp_path / "restore.db"
+    restore_env = dict(ENABLED_ENV, DATABASE_PATH=str(restore_db))
+    restored = restore_empty_smoke_state(
+        env=restore_env,
+        store_factory=lambda config: store,
+        ensure_schema=_ensure,
+    )
+    assert restored.disposition == "RESTORED_EMPTY_CHECKPOINT"
+    assert restored.generation == published.generation
+    assert restored.manifest_key == published.manifest_key
+    assert restored.manifest_sha256 == published.manifest_sha256
+    assert restored.package_key == published.package_key
+    assert restored.package_sha256 == published.package_sha256
+    assert restored.source_code_sha == published.source_code_sha
+    assert restored.rights_classification == published.rights_classification
+    assert restored.package_bytes == published.package_bytes
+    assert dict(restored.table_counts) == zero_counts
+    assert dict(restored.inserted or {}) == zero_counts
+    assert dict(restored.existing or {}) == zero_counts
+
+    with pytest.raises(ResearchStateSmokeBoundaryError, match="same source code SHA"):
+        restore_empty_smoke_state(
+            env=dict(restore_env, GITHUB_SHA="b" * 40, DATABASE_PATH=str(tmp_path / "mismatch.db")),
+            store_factory=lambda config: store,
+            ensure_schema=_ensure,
+        )
+
+
+def test_empty_smoke_refuses_nonempty_local_or_remote_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = dict(ENABLED_ENV, DATABASE_PATH=str(tmp_path / "state.db"))
+    monkeypatch.setattr(
+        runtime,
+        "research_state_counts",
+        lambda path: {
+            "prediction_ledger": 1,
+            "prediction_outcomes": 0,
+            "pit_dataset_manifests": 0,
+        },
+    )
+    with pytest.raises(ResearchStateSmokeBoundaryError, match="non-empty local"):
+        publish_empty_smoke_state(
+            env=env,
+            store_factory=lambda config: (_ for _ in ()).throw(
+                AssertionError("non-empty local state must fail before store construction")
+            ),
+            ensure_schema=_ensure,
+        )
+
+    monkeypatch.undo()
+    store = FilesystemObjectStore(tmp_path / "objects")
+    store.put_if_absent(f"{PACKAGE_PREFIX}/orphan.json", b"{}")
+    with pytest.raises(ResearchStateSmokeBoundaryError, match="fresh research-state"):
+        publish_empty_smoke_state(
+            env=env,
+            store_factory=lambda config: store,
+            ensure_schema=_ensure,
+        )
+
+
 def test_workflow_binds_restore_before_analysis_and_publish_after_success() -> None:
     workflow = (
         Path(__file__).parents[1] / ".github" / "workflows" / "00-daily-analysis.yml"
@@ -288,6 +379,51 @@ def test_workflow_binds_restore_before_analysis_and_publish_after_success() -> N
     assert "github.event.inputs.mode != 'market-only'" in publish_block
     assert "continue-on-error" not in publish_block
     assert "python -m src.services.research_state_runtime publish" in publish_block
+
+    assert "- research-state-smoke" in workflow
+    smoke_marker = "- name: 研究状态空检查点 Smoke（仅人工）"
+    smoke_block = workflow[workflow.index(smoke_marker):workflow.index(restore_marker)]
+    assert "github.event_name == 'workflow_dispatch'" in smoke_block
+    assert "github.event.inputs.mode == 'research-state-smoke'" in smoke_block
+    assert "RESEARCH_STATE_DURABILITY_ENABLED: 'true'" in smoke_block
+    assert "DATABASE_PATH: ./data/research_state_smoke.db" in smoke_block
+    assert 'python -m src.services.research_state_runtime "smoke-$PHASE"' in smoke_block
+    assert "main.py" not in smoke_block
+    assert "上传研究状态 Smoke Receipt" in smoke_block
+    assert "research-state-smoke-receipt-${{ github.run_id }}" in smoke_block
+    assert "retention-days: 1" in smoke_block
+    assert "research-state-smoke" in restore_block
+    assert "research-state-smoke" in analysis_block
+    assert "research-state-smoke" in publish_block
+
+
+def test_smoke_cli_emits_machine_readable_identity_receipt(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "phase": "smoke-publish-empty",
+        "disposition": "PUBLISHED_EMPTY_CHECKPOINT",
+        "generation": 1,
+        "source_code_sha": "a" * 40,
+        "manifest_key": "research-state/v1/manifests/00000000000000000001.json",
+        "manifest_sha256": "b" * 64,
+        "package_key": f"{PACKAGE_PREFIX}/{'c' * 64}.json",
+        "package_sha256": "c" * 64,
+        "package_bytes": 1024,
+        "rights_classification": "NO_CONDITIONAL_VALUES",
+        "table_counts": {
+            "prediction_ledger": 0,
+            "prediction_outcomes": 0,
+            "pit_dataset_manifests": 0,
+        },
+    }
+    monkeypatch.setattr(
+        runtime,
+        "publish_empty_smoke_state",
+        lambda: SimpleNamespace(as_public_dict=lambda: payload),
+    )
+    assert runtime.main(["smoke-publish-empty"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload
 
 
 def test_public_cli_error_receipt_does_not_echo_secret(

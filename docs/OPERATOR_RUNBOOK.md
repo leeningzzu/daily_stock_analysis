@@ -138,6 +138,10 @@ LLM_MY_PROXY_MODELS=<MODEL_A>,<MODEL_B>
 
 default-off 的意义是：没有显式启用变量时，现有 daily analysis 行为保持不变且不会发起 R2 请求。
 
+代码同时提供一个**仅人工、仅空状态**的 `research-state-smoke` workflow mode，用于未来 live-effect gate 的两次连续性验收：先选 `publish-empty`，再在另一 fresh runner 选 `restore-empty`。这个 mode 使用独立 `research_state_smoke.db`，不执行股票分析、报告或通知；只允许三张 research-state 表均为 0 行的 generation-1 checkpoint，并要求两次运行使用同一 exact `GITHUB_SHA`，把 code SHA、generation、package/manifest key+SHA、package bytes 和表计数输出为 machine-readable JSON receipt，同时仅为该 smoke 上传一个 1 天保留的 receipt artifact，便于后续机器验收；该 artifact 不是 canonical research state。它不会替代 Production durability 开关，正常/定时分析的 `RESEARCH_STATE_DURABILITY_ENABLED` 仍默认 `false`。
+
+在 Project State 明确授权真实 effect 之前，**不要运行该 smoke mode**；代码入口存在不代表 bucket、credential、GitHub Variables/Secrets 或 R2 写入已经获准。
+
 ## 9. 私有 GitHub 现在怎么理解
 
 当前状态：

@@ -84,12 +84,13 @@ def test_static_pe_pb_without_percentile_or_peers_does_not_claim_relative_valuat
     assert "内在价值" not in summary["valuation"]
 
 
-def test_volume_price_language_marks_shakeout_only_as_candidate():
+def test_volume_price_language_describes_shrink_volume_without_claiming_shakeout():
     summary = build_stock_factor_decision_summary(_trend())
     volume_text = summary["sections"]["volume_price"]
 
-    assert "洗盘候选特征" in volume_text
-    assert "后续转强确认" in volume_text
+    assert "卖压有所收缩" in volume_text
+    assert "关注支撑与后续转强" in volume_text
+    assert "洗盘" not in volume_text
     assert "主力" not in volume_text
 
 
@@ -103,7 +104,8 @@ def test_heavy_volume_down_cannot_be_described_as_shakeout():
         )
     )
 
-    assert "不能解释为洗盘" in summary["sections"]["volume_price"]
+    assert "供应压力明显增加" in summary["sections"]["volume_price"]
+    assert "洗盘" not in summary["sections"]["volume_price"]
     assert "当前不适合新增仓位" in summary["conclusion"]
 
 
@@ -357,7 +359,8 @@ def test_supply_demand_is_first_class_observable_evidence_without_new_action_aut
     assert evidence["institutional_intent_inferred"] is False
     assert evidence["hard_veto"] is False
     assert summary["canonical_decision"]["action"] == "WAIT"
-    assert "不推断机构意图" in summary["sections"]["supply_demand_volume_price"]
+    assert "需求压力占优" in summary["sections"]["supply_demand_volume_price"]
+    assert "机构意图" not in summary["sections"]["supply_demand_volume_price"]
     assert "主力" not in str(evidence)
     assert "吸筹" not in str(evidence)
     assert "出货" not in str(evidence)
@@ -417,7 +420,9 @@ def test_cost_structure_is_first_class_but_never_independent_action_authority():
     assert evidence["independent_action_authority"] is False
     assert summary["canonical_decision"]["action"] == "WAIT"
     assert "20日历史量价参考" in summary["sections"]["cost_structure"]
-    assert "不代表真实持仓成本" in summary["sections"]["cost_structure"]
+    assert evidence["observable_only"] is True
+    assert evidence["institutional_intent_inferred"] is False
+    assert "真实持仓成本" not in summary["sections"]["cost_structure"]
     assert "主力" not in str(evidence)
     assert "吸筹" not in str(evidence)
     assert "出货" not in str(evidence)

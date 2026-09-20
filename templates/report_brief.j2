@@ -17,12 +17,8 @@
 
 {{ brief.get('fused_paragraph') }}
 
-{% set explanation_status = factor.get('explanation_status') or {} %}
-{% if explanation_status.get('state') == 'UNAVAILABLE' and explanation_status.get('mode') == 'DETERMINISTIC_DEGRADED' %}**解释层**: LLM 暂不可用；以下结论仅依据已证明的确定性证据。
-
-{% endif %}
 {% set valuation = brief.get('valuation') or {} %}
-{% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**估值**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
+{% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**{{ valuation.get('label') or '估值' }}**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
 {% endif %}
 {% if brief.get('coverage_text') %}**多周期**: {{ brief.get('coverage_text') }}
 {% endif %}
@@ -32,6 +28,16 @@
 {% set daily_thesis = timeframe_thesis.get('daily') or {} %}
 {% set bridge_thesis = timeframe_thesis.get('60m') or {} %}
 {% if (monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary')) or (weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary')) or (daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary')) or (bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary')) %}**趋势/量价**: {% if monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary') %}月线：{{ monthly_thesis.get('summary') }}{% endif %}{% if weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary') %}{% if monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary') %}｜{% endif %}周线：{{ weekly_thesis.get('summary') }}{% endif %}{% if daily_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and daily_thesis.get('summary') %}{% if (monthly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and monthly_thesis.get('summary')) or (weekly_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and weekly_thesis.get('summary')) %}｜{% endif %}日线：{{ daily_thesis.get('summary') }}{% endif %}{% if bridge_thesis.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and bridge_thesis.get('summary') %}｜60m：{{ bridge_thesis.get('summary') }}{% endif %}
+{% endif %}
+{% set short_term = brief.get('short_term_execution_panel') or {} %}
+{% set short30 = short_term.get('30m') or {} %}
+{% set short15 = short_term.get('15m') or {} %}
+{% set short5 = short_term.get('5m') or {} %}
+{% set short30_ready = short30.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short30.get('summary') %}
+{% set short15_ready = short15.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short15.get('summary') %}
+{% set short5_ready = short5.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short5.get('summary') %}
+{% if short_term.get('status') == 'READY' and (short30_ready or short15_ready or short5_ready) %}**短线**: {% if short30_ready %}30分钟：{{ short30.get('summary') }}{% endif %}{% if short15_ready %}{% if short30_ready %}｜{% endif %}15分钟：{{ short15.get('summary') }}{% endif %}{% if short5_ready %}{% if short30_ready or short15_ready %}｜{% endif %}5分钟：{{ short5.get('summary') }}{% endif %}
+{% elif short_term.get('status') == 'READY' and short_term.get('summary') %}**短线**: {{ short_term.get('summary') }}
 {% endif %}
 {% set key_levels = brief.get('key_levels') or {} %}
 {% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}{{ key_levels.get('support_label', '结构支撑') }} {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}{{ key_levels.get('resistance_label', '结构压力') }} {{ key_levels.get('resistance') }}{% endif %}

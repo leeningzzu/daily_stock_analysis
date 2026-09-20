@@ -43,7 +43,7 @@
 {% if current_price.get('value') is not none and current_price.get('value') != '' %}**当前价格**: {{ current_price.get('value') }}
 {% endif %}
 {% set valuation = investor_brief.get('valuation') or {} %}
-{% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**估值**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
+{% if valuation.get('bucket') or valuation.get('summary') or valuation.get('uncertainty') %}**{{ valuation.get('label') or '估值' }}**: {% if valuation.get('bucket') %}{{ valuation.get('bucket') }}{% endif %}{% if valuation.get('summary') %}{% if valuation.get('bucket') %}｜{% endif %}{{ valuation.get('summary') }}{% endif %}{% if valuation.get('uncertainty') %}（不确定性：{{ valuation.get('uncertainty') }}）{% endif %}
 {% endif %}
 {% set key_levels = investor_brief.get('key_levels') or {} %}
 {% if key_levels.get('support') is not none or key_levels.get('resistance') is not none %}**关键位置**: {% if key_levels.get('support') is not none %}{{ key_levels.get('support_label', '结构支撑') }} {{ key_levels.get('support') }}{% endif %}{% if key_levels.get('support') is not none and key_levels.get('resistance') is not none %}｜{% endif %}{% if key_levels.get('resistance') is not none %}{{ key_levels.get('resistance_label', '结构压力') }} {{ key_levels.get('resistance') }}{% endif %}
@@ -85,7 +85,20 @@
 {% endif %}
 {% endif %}
 {% set short_term = investor_brief.get('short_term_execution_panel') or {} %}
-{% if short_term.get('status') == 'READY' and short_term.get('summary') %}**短线波段 30/15/5m**: {{ short_term.get('summary') }}
+{% set short30 = short_term.get('30m') or {} %}
+{% set short15 = short_term.get('15m') or {} %}
+{% set short5 = short_term.get('5m') or {} %}
+{% set short30_ready = short30.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short30.get('summary') %}
+{% set short15_ready = short15.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short15.get('summary') %}
+{% set short5_ready = short5.get('status') in ['READY', 'PROVEN_CURRENT', 'PARTIAL_CURRENT'] and short5.get('summary') %}
+{% if short_term.get('status') == 'READY' and (short30_ready or short15_ready or short5_ready) %}**短线波段**:
+{% if short30_ready %}- 30分钟：{{ short30.get('summary') }}
+{% endif %}
+{% if short15_ready %}- 15分钟：{{ short15.get('summary') }}
+{% endif %}
+{% if short5_ready %}- 5分钟：{{ short5.get('summary') }}
+{% endif %}
+{% elif short_term.get('status') == 'READY' and short_term.get('summary') %}**短线波段 30/15/5m**: {{ short_term.get('summary') }}
 {% endif %}
 
 {% endif %}

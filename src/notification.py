@@ -197,7 +197,8 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
             valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
             if uncertainty:
                 valuation_text += f"（不确定性：{uncertainty}）"
-            lines.append(f"**估值**: {valuation_text}")
+            valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
+            lines.append(f"**{valuation_label}**: {valuation_text}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):
@@ -289,9 +290,24 @@ def _append_investor_brief_block(lines: List[str], factor: Any, report_language:
 
     short_term = brief.get("short_term_execution_panel") or {}
     if isinstance(short_term, dict) and short_term.get("status") == "READY":
-        short_summary = str(short_term.get("summary") or "").strip()
-        if short_summary:
-            lines.append(f"**短线波段 30/15/5m**: {short_summary}")
+        rendered_short = []
+        for label, key in (("30分钟", "30m"), ("15分钟", "15m"), ("5分钟", "5m")):
+            item = short_term.get(key) or {}
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip()
+            summary_text = str(item.get("summary") or "").strip()
+            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
+                rendered_short.append(
+                    summary_text if summary_text.startswith(label) else f"{label}：{summary_text}"
+                )
+        if rendered_short:
+            lines.append("**短线波段**:")
+            lines.extend(f"- {item}" for item in rendered_short)
+        else:
+            short_summary = str(short_term.get("summary") or "").strip()
+            if short_summary:
+                lines.append(f"**短线波段 30/15/5m**: {short_summary}")
 
     lines.append("")
     return True
@@ -313,17 +329,6 @@ def _append_investor_notification_block(
     fused = str(brief.get("fused_paragraph") or "").strip()
     lines.extend([f"**综合结论**: {one_line}", "", fused, ""])
 
-    explanation_status = factor.get("explanation_status") if isinstance(factor, dict) else None
-    if (
-        isinstance(explanation_status, dict)
-        and explanation_status.get("state") == "UNAVAILABLE"
-        and explanation_status.get("mode") == "DETERMINISTIC_DEGRADED"
-    ):
-        lines.extend([
-            "**解释层**: LLM 暂不可用；以下结论仅依据已证明的确定性证据。",
-            "",
-        ])
-
     valuation = brief.get("valuation") or {}
     if isinstance(valuation, dict):
         valuation_parts = [
@@ -336,7 +341,8 @@ def _append_investor_notification_block(
             valuation_text = "｜".join(valuation_parts) if valuation_parts else "数据不足"
             if uncertainty:
                 valuation_text += f"（不确定性：{uncertainty}）"
-            lines.append(f"**估值**: {valuation_text}")
+            valuation_label = str(valuation.get("label") or "估值").strip() or "估值"
+            lines.append(f"**{valuation_label}**: {valuation_text}")
 
     coverage_text = str(brief.get("coverage_text") or "").strip()
     if coverage_text:
@@ -360,6 +366,26 @@ def _append_investor_notification_block(
                 timeframe_details.append(f"{label}：{summary_text}")
     if timeframe_details:
         lines.append(f"**趋势/量价**: {'｜'.join(timeframe_details[:3])}")
+
+    short_term = brief.get("short_term_execution_panel") or {}
+    if isinstance(short_term, dict) and short_term.get("status") == "READY":
+        rendered_short = []
+        for label, key in (("30分钟", "30m"), ("15分钟", "15m"), ("5分钟", "5m")):
+            item = short_term.get(key) or {}
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip()
+            summary_text = str(item.get("summary") or "").strip()
+            if status in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"} and summary_text:
+                rendered_short.append(
+                    summary_text if summary_text.startswith(label) else f"{label}：{summary_text}"
+                )
+        if rendered_short:
+            lines.append(f"**短线**: {'｜'.join(rendered_short)}")
+        else:
+            short_summary = str(short_term.get("summary") or "").strip()
+            if short_summary:
+                lines.append(f"**短线**: {short_summary}")
 
     key_levels = brief.get("key_levels") or {}
     if isinstance(key_levels, dict):

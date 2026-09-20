@@ -19,6 +19,7 @@ _NEGATIVE_SIGNALS = {"卖出", "强烈卖出"}
 _HARD_RISK_HINTS = ("重大利空", "重大风险", "退市", "放量跌破", "跌破关键支撑")
 _MISSING_EVIDENCE_HINTS = ("数据不足", "无法完成分析", "无法判断")
 _CANONICAL_AUTHORITY = "stock_trend_quality_pullback_v1"
+_ETF_CANONICAL_AUTHORITY = "etf_relative_strength_rotation_v1"
 _MARKET_SECTOR_REGIME_VERSION = "market-sector-regime-v1"
 _TREND_RELATIVE_STRENGTH_VERSION = "trend-relative-strength-v1"
 _SUPPLY_DEMAND_VOLUME_PRICE_VERSION = "supply-demand-volume-price-v1"
@@ -207,7 +208,7 @@ def _cost_structure_evidence_summary(evidence: Dict[str, Any], chip_data: Any) -
 
     if not parts:
         return _cost_structure_summary(chip_data)
-    return "成本/筹码：" + "；".join(parts) + "；历史量价参考不代表真实持仓成本，也不推断机构意图。"
+    return "成本/筹码：" + "；".join(parts) + "。"
 
 
 def _volume_price_summary(trend_result: Any) -> str:
@@ -215,11 +216,11 @@ def _volume_price_summary(trend_result: Any) -> str:
     ratio = _safe_float(getattr(trend_result, "volume_ratio_5d", None))
     ratio_text = f"，当日量约为5日均量的 {ratio:.2f} 倍" if ratio is not None and ratio > 0 else ""
     if status == "缩量回调":
-        return f"量价：缩量回调，卖压有所收缩{ratio_text}；可视为洗盘候选特征，但仍需支撑与后续转强确认。"
+        return f"量价：缩量回调，卖压有所收缩{ratio_text}，关注支撑与后续转强。"
     if status == "放量下跌":
-        return f"量价：放量下跌{ratio_text}，供应压力增加，不能解释为洗盘。"
+        return f"量价：放量下跌{ratio_text}，供应压力明显增加。"
     if status == "放量上涨":
-        return f"量价：放量上涨{ratio_text}，需求增强，但仍需观察后续承接。"
+        return f"量价：放量上涨{ratio_text}，需求增强，关注后续承接。"
     if status == "缩量上涨":
         return f"量价：缩量上涨{ratio_text}，上行动能不足。"
     text = str(getattr(trend_result, "volume_trend", None) or "量能正常").strip()
@@ -321,9 +322,8 @@ def _price_structure_summary(evidence: Dict[str, Any], trend_result: Any) -> str
     if range_state == "BETWEEN_CONFIRMED_LEVELS":
         parts.append("当前位于已确认支撑与压力之间")
     if not parts:
-        return "结构：尚未形成足够的已确认 Pivot/Swing 结构证据。"
-    prefix = "结构：" if evidence.get("evidence_state") == "READY" else "结构：数据覆盖未完全就绪；"
-    return prefix + "；".join(parts) + "。"
+        return "结构：尚未形成足够的支撑、压力或突破证据。"
+    return "结构：" + "；".join(parts) + "。"
 
 
 def _momentum_summary(trend_result: Any) -> str:
@@ -381,7 +381,6 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
     volatility = _mapping(context.get("volatility"))
     momentum = _mapping(context.get("momentum"))
     divergence = _mapping(context.get("confirmed_divergence"))
-    diagnostics = _mapping(context.get("process_diagnostics"))
     parts: List[str] = []
     realized = _safe_float(volatility.get("realized_volatility_20d_annualized_pct"))
     tr_sma = _safe_float(volatility.get("true_range_sma_20_pct"))
@@ -400,8 +399,6 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
         parts.append("已确认同一摆动上的动量底背离")
     elif state == "BEARISH_DIVERGENCE":
         parts.append("已确认同一摆动上的动量顶背离")
-    if diagnostics.get("classification_authority") == "OBSERVATIONAL_ONLY":
-        parts.append("过程诊断仅作观察，不自动切换策略")
     macd = _mapping(momentum.get("macd"))
     rsi = _mapping(momentum.get("rsi"))
     if macd.get("status"):
@@ -410,7 +407,7 @@ def _volatility_momentum_summary(evidence: Dict[str, Any], trend_result: Any) ->
         parts.append(f"RSI {rsi['status']}")
     if not parts:
         return _momentum_summary(trend_result)
-    prefix = "波动/动量：" if evidence.get("evidence_state") == "READY" else "波动/动量：数据覆盖未完全就绪；"
+    prefix = "波动/动量："
     return prefix + "；".join(parts[:7]) + "。"
 
 
@@ -446,8 +443,8 @@ def _pattern_trigger_summary(evidence: Dict[str, Any]) -> str:
     primary = _mapping(context.get("primary_pattern"))
     if not primary:
         if evidence.get("evidence_state") == "READY":
-            return "形态/触发：当前未形成 V1 支持的已确认或形成中基底形态。"
-        return "形态/触发：确定性形态证据不足，暂不据此升级或否决。"
+            return "形态/触发：当前没有材料性的基底形态变化。"
+        return "形态/触发：数据不足。"
 
     label = {
         "CUP_BASE": "杯形基底",
@@ -462,20 +459,22 @@ def _pattern_trigger_summary(evidence: Dict[str, Any]) -> str:
     }.get(subtype, subtype)
     lifecycle = {
         "FORMING": "形成中",
-        "CONFIRMED": "已由 Price Structure 突破事件确认",
-        "FAILED": "已由 Price Structure 失败突破事件判定失败",
+        "CONFIRMED": "已经突破确认",
+        "FAILED": "突破失败",
     }.get(str(primary.get("lifecycle") or ""), "状态未知")
     parts = [label + (f"/{subtype_label}" if subtype_label else ""), lifecycle]
     if primary.get("pattern_type") == "CUP_BASE":
         handle = str(primary.get("handle_status") or "NONE")
-        parts.append({"NONE": "无独立柄部", "FORMING": "柄部形成中", "COMPLETE": "柄部已完成"}.get(handle, f"柄部 {handle}"))
+        handle_text = {"FORMING": "柄部形成中", "COMPLETE": "柄部已完成"}.get(handle)
+        if handle_text:
+            parts.append(handle_text)
     volume_ref = _mapping(primary.get("volume_evidence_ref"))
     volume_confirmation = str(volume_ref.get("confirmation") or "")
     if volume_confirmation == "CONFIRMED":
-        parts.append("突破量能参考已确认")
+        parts.append("突破量能已确认")
     elif volume_confirmation == "NOT_CONFIRMED":
-        parts.append("突破量能参考尚未确认")
-    return "形态/触发：" + "；".join(parts) + "；仅作确定性观察证据，不拥有独立动作权限。"
+        parts.append("突破量能尚未确认")
+    return "形态/触发：" + "；".join(parts) + "。"
 
 
 def _conclusion(trend_result: Any, score: int) -> str:
@@ -662,15 +661,14 @@ def _trend_relative_strength_summary(evidence: Dict[str, Any]) -> str:
     relative = _mapping(evidence.get("relative_strength"))
     trend_text = str(absolute.get("status") or "趋势不明")
     if str(relative.get("status") or "").upper() != "READY":
-        return f"趋势/相对强弱：{trend_text}；基准相对强弱证据尚未 READY。"
+        return f"趋势/相对强弱：{trend_text}。"
     benchmark = _mapping(relative.get("benchmark"))
     rel = _mapping(relative.get("relative"))
     ratio = _safe_float(rel.get("relative_ratio_change_pct"))
     ratio_text = f"{ratio:+.2f}%" if ratio is not None else "未知"
     return (
         f"趋势/相对强弱：{trend_text}；相对{benchmark.get('name') or benchmark.get('code') or '基准'}"
-        f"的 {relative.get('horizon_sessions', 60)} 个交易时段比率变化 {ratio_text}，"
-        f"状态 {rel.get('state') or 'UNKNOWN'}。"
+        f"的 {relative.get('horizon_sessions', 60)} 个交易时段比率变化 {ratio_text}。"
     )
 
 
@@ -716,7 +714,7 @@ def _supply_demand_volume_price_summary(evidence: Dict[str, Any]) -> str:
     context = _mapping(evidence.get("completed_bar_context"))
     status = str(context.get("status") or "").upper()
     if status not in {"READY", "PARTIAL"}:
-        return "供需/量价：completed OHLCV 证据不足，暂不推断供需状态。"
+        return "供需/量价：数据不足。"
     relative = _mapping(context.get("relative_volume"))
     directional = _mapping(context.get("directional_volume"))
     close_location = _mapping(context.get("close_location_flow"))
@@ -736,21 +734,21 @@ def _supply_demand_volume_price_summary(evidence: Dict[str, Any]) -> str:
         parts.append(f"方向量能平衡 {balance:+.2f}")
     if cmf is not None:
         parts.append(f"CMF20 {cmf:+.2f}")
-    if status == "PARTIAL":
-        parts.append("数据源一致性未充分证明")
-    return "供需/量价：" + "；".join(parts) + "；仅描述可观察压力，不推断机构意图。"
+    return "供需/量价：" + "；".join(parts) + "。"
 
 
 def _canonical_decision(
     trend_result: Any,
     market_sector_regime: Optional[Dict[str, Any]] = None,
+    *,
+    authority: str = _CANONICAL_AUTHORITY,
 ) -> Dict[str, Any]:
-    """Produce the conservative P0 WAIT/PASS decision from deterministic inputs."""
+    """Produce the conservative WAIT/PASS decision from deterministic inputs."""
     reason_codes: List[str] = []
     if trend_result is None:
         reason_codes.append("MISSING_TREND_RESULT")
         return {
-            "authority": _CANONICAL_AUTHORITY,
+            "authority": authority,
             "action": "WAIT",
             "public_action": "watch",
             "evidence_state": "UNKNOWN",
@@ -781,7 +779,7 @@ def _canonical_decision(
 
     if reason_codes:
         return {
-            "authority": _CANONICAL_AUTHORITY,
+            "authority": authority,
             "action": "WAIT",
             "public_action": "watch",
             "evidence_state": "UNKNOWN",
@@ -811,7 +809,7 @@ def _canonical_decision(
 
     if hard_veto_codes:
         return {
-            "authority": _CANONICAL_AUTHORITY,
+            "authority": authority,
             "action": "PASS",
             "public_action": "avoid",
             "evidence_state": "PROVEN",
@@ -820,7 +818,7 @@ def _canonical_decision(
         }
 
     return {
-        "authority": _CANONICAL_AUTHORITY,
+        "authority": authority,
         "action": "WAIT",
         "public_action": "watch",
         "evidence_state": "PROVEN",
@@ -829,15 +827,19 @@ def _canonical_decision(
     }
 
 
-def _canonical_public_text(summary: Dict[str, Any]) -> Dict[str, str]:
+def _canonical_public_text(summary: Dict[str, Any], *, scope: str = "p0") -> Dict[str, str]:
     decision = summary["canonical_decision"]
+    p0 = scope == "p0"
     if decision["evidence_state"] == "UNKNOWN":
         return {
             "label": "观望",
             "advice": "观望：必需证据不足，暂不采取买卖动作。",
             "signal_type": "🟡数据不足 / 观望",
             "no_position": "不新增仓位；等待必需趋势、评分与量价证据完整。",
-            "has_position": "不由本次 P0 结论推导买卖动作；按既有风险计划管理。",
+            "has_position": (
+                "不由本次 P0 结论推导买卖动作；按既有风险计划管理。"
+                if p0 else "按既有风险计划管理，等待必需证据完整。"
+            ),
         }
     if decision["action"] == "PASS":
         return {
@@ -845,38 +847,50 @@ def _canonical_public_text(summary: Dict[str, Any]) -> Dict[str, str]:
             "advice": "回避：确定性风险或弱势条件尚未解除。",
             "signal_type": "⚠️风险否决 / 回避",
             "no_position": "不新增仓位；等待风险或弱势条件解除后再评估。",
-            "has_position": "不由本次 P0 结论生成卖出指令；按既有风险计划处理。",
+            "has_position": (
+                "不由本次 P0 结论生成卖出指令；按既有风险计划处理。"
+                if p0 else "风险条件尚未解除，按既有风险计划处理。"
+            ),
         }
     return {
         "label": "观望",
         "advice": "观望：仅保留条件化观察，等待操作条件成立。",
         "signal_type": "🟡条件观察 / 观望",
         "no_position": "等待操作条件成立后再评估，不追高、不抢跑。",
-        "has_position": "本次 P0 不生成加减仓指令；按既有风险计划管理。",
+        "has_position": (
+            "本次 P0 不生成加减仓指令；按既有风险计划管理。"
+            if p0 else "按既有风险计划管理，等待关注条件成立。"
+        ),
     }
 
 
-def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> Any:
-    """Make the deterministic P0 decision the sole public action authority."""
+def apply_canonical_decision_to_result(
+    result: Any,
+    summary: Dict[str, Any],
+    *,
+    scope: str = "p0",
+) -> Any:
+    """Make the deterministic decision the sole public action authority."""
     decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
     if not isinstance(decision, dict):
         raise ValueError("factor_decision.canonical_decision is required")
     if decision.get("action") not in {"WAIT", "PASS"}:
-        raise ValueError("P0 canonical action must be WAIT or PASS")
+        raise ValueError("canonical action must be WAIT or PASS")
     if decision.get("public_action") not in {"watch", "avoid"}:
-        raise ValueError("P0 canonical public_action must be watch or avoid")
+        raise ValueError("canonical public_action must be watch or avoid")
 
-    text = _canonical_public_text(summary)
+    text = _canonical_public_text(summary, scope=scope)
     conclusion = str(summary.get("conclusion") or text["advice"]).strip()
     reason_codes = [str(item) for item in decision.get("reason_codes") or []]
     reason_text = "、".join(reason_codes) or "CONDITIONAL_OBSERVATION_ONLY"
+    authority_label = "确定性 P0 权威" if scope == "p0" else "确定性研究权威"
 
     result.action = decision["public_action"]
     result.action_label = text["label"]
     result.operation_advice = text["advice"]
     result.decision_type = "hold"
     result.analysis_summary = conclusion
-    result.buy_reason = f"确定性 P0 权威：{reason_text}；不构成买入或卖出指令。"
+    result.buy_reason = f"{authority_label}：{reason_text}；不构成买入或卖出指令。"
 
     dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
     result.dashboard = dashboard
@@ -899,7 +913,10 @@ def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> 
     }
 
     dashboard["phase_decision"] = {
-        "action_window": "P0 有界验收：仅观察，不执行买卖动作",
+        "action_window": (
+            "P0 有界验收：仅观察，不执行买卖动作"
+            if scope == "p0" else "条件化研究：等待关注或失效条件触发"
+        ),
         "immediate_action": text["advice"],
         "watch_conditions": [
             summary.get("action_condition", "等待操作条件完整"),
@@ -907,19 +924,35 @@ def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> 
         ],
         "next_check_time": "下一次具备完整确定性证据时",
         "confidence_reason": (
-            "必需证据不足，P0 按 UNKNOWN 失败关闭。"
+            (
+                "必需证据不足，P0 按 UNKNOWN 失败关闭。"
+                if scope == "p0"
+                else "必需证据不足，按 UNKNOWN 保持观望。"
+            )
             if decision.get("evidence_state") == "UNKNOWN"
-            else "P0 仅依据确定性趋势、评分、量价与硬风险规则。"
+            else (
+                "P0 仅依据确定性趋势、评分、量价与硬风险规则。"
+                if scope == "p0"
+                else "仅依据确定性趋势、评分、量价与硬风险规则。"
+            )
         ),
         "data_limitations": (
-            ["必需证据不完整；LLM 仅作解释，不拥有动作权限。"]
+            (
+                ["必需证据不完整；LLM 仅作解释，不拥有动作权限。"]
+                if scope == "p0"
+                else ["必需证据不完整。"]
+            )
             if decision.get("evidence_state") == "UNKNOWN"
-            else ["P0 只允许 WAIT/PASS；不生成 BUY/HOLD/EXIT。"]
+            else (
+                ["P0 只允许 WAIT/PASS；不生成 BUY/HOLD/EXIT。"]
+                if scope == "p0"
+                else ["当前研究动作仅为条件化观察或回避。"]
+            )
         ),
     }
 
     dashboard["strategy_synthesis"] = {
-        "authority": _CANONICAL_AUTHORITY,
+        "authority": decision.get("authority") or _CANONICAL_AUTHORITY,
         "canonical_public_action": decision["public_action"],
         "final_signal": "hold",
         "consensus_level": (
@@ -934,16 +967,29 @@ def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> 
         "summary_params": {"opinion_count": 1, "invalid_opinion_count": 0},
     }
 
-    not_applicable = "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+    not_applicable = (
+        "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+        if scope == "p0" else "等待确定性关注条件成立"
+    )
     dashboard["battle_plan"] = {
         "sniper_points": {
             "ideal_buy": not_applicable,
             "secondary_buy": not_applicable,
-            "stop_loss": "P0 不生成新止损位；沿用既有风险计划",
-            "take_profit": "P0 不生成新止盈位；沿用既有风险计划",
+            "stop_loss": (
+                "P0 不生成新止损位；沿用既有风险计划"
+                if scope == "p0" else summary.get("invalidation_condition", not_applicable)
+            ),
+            "take_profit": (
+                "P0 不生成新止盈位；沿用既有风险计划"
+                if scope == "p0" else "按既有风险计划管理"
+            ),
         },
         "position_strategy": {
-            "suggested_position": "不新增仓位",
+            "suggested_position": (
+                "不新增仓位"
+                if scope == "p0" or decision["public_action"] != "watch"
+                else "等待条件确认"
+            ),
             "entry_plan": summary.get("action_condition", not_applicable),
             "risk_control": summary.get("invalidation_condition", not_applicable),
         },
@@ -957,25 +1003,27 @@ def apply_canonical_decision_to_result(result: Any, summary: Dict[str, Any]) -> 
     calibration = dashboard.get("decision_score_calibration")
     calibration = dict(calibration) if isinstance(calibration, dict) else {}
     calibration["final_action"] = decision["public_action"]
-    calibration["guardrail_reason"] = f"p0_canonical:{reason_text}"
+    calibration["guardrail_reason"] = f"{'p0_' if scope == 'p0' else ''}canonical:{reason_text}"
     dashboard["decision_score_calibration"] = calibration
     stability = dashboard.get("decision_stability")
     if isinstance(stability, dict):
         stability = dict(stability)
         stability["final_action"] = decision["public_action"]
-        stability["reason"] = f"p0_canonical:{reason_text}"
+        stability["reason"] = f"{'p0_' if scope == 'p0' else ''}canonical:{reason_text}"
         dashboard["decision_stability"] = stability
     return result
 
 
-def assert_canonical_consumer_consistency(result: Any) -> None:
-    """Fail closed if any public action slot diverges from canonical P0 output."""
+def assert_canonical_consumer_consistency(result: Any, *, scope: str = "p0") -> None:
+    """Fail closed if any public action slot diverges from canonical output."""
     dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
     summary = dashboard.get("factor_decision")
     decision = summary.get("canonical_decision") if isinstance(summary, dict) else None
     if not isinstance(decision, dict):
         raise ValueError("canonical decision missing from result")
-    text = _canonical_public_text(summary)
+    text = _canonical_public_text(summary, scope=scope)
+    reason_text = "、".join(str(item) for item in decision.get("reason_codes") or []) or "CONDITIONAL_OBSERVATION_ONLY"
+    authority_label = "确定性 P0 权威" if scope == "p0" else "确定性研究权威"
     expected = {
         "result.action": (getattr(result, "action", None), decision["public_action"]),
         "result.action_label": (getattr(result, "action_label", None), text["label"]),
@@ -984,7 +1032,7 @@ def assert_canonical_consumer_consistency(result: Any) -> None:
         "result.analysis_summary": (getattr(result, "analysis_summary", None), summary["conclusion"]),
         "result.buy_reason": (
             getattr(result, "buy_reason", None),
-            f"确定性 P0 权威：{'、'.join(str(item) for item in decision.get('reason_codes') or []) or 'CONDITIONAL_OBSERVATION_ONLY'}；不构成买入或卖出指令。",
+            f"{authority_label}：{reason_text}；不构成买入或卖出指令。",
         ),
         "dashboard.action": (dashboard.get("action"), decision["public_action"]),
         "dashboard.action_label": (dashboard.get("action_label"), text["label"]),
@@ -1022,20 +1070,33 @@ def assert_canonical_consumer_consistency(result: Any) -> None:
             stability.get("final_action"),
             decision["public_action"],
         )
-    not_applicable = "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+    not_applicable = (
+        "P0 不生成买卖点；以确定性 WAIT/PASS 为准"
+        if scope == "p0" else "等待确定性关注条件成立"
+    )
     expected["dashboard.battle_plan.sniper_points"] = (
         battle.get("sniper_points") if isinstance(battle, dict) else None,
         {
             "ideal_buy": not_applicable,
             "secondary_buy": not_applicable,
-            "stop_loss": "P0 不生成新止损位；沿用既有风险计划",
-            "take_profit": "P0 不生成新止盈位；沿用既有风险计划",
+            "stop_loss": (
+                "P0 不生成新止损位；沿用既有风险计划"
+                if scope == "p0" else summary.get("invalidation_condition", not_applicable)
+            ),
+            "take_profit": (
+                "P0 不生成新止盈位；沿用既有风险计划"
+                if scope == "p0" else "按既有风险计划管理"
+            ),
         },
     )
     expected["dashboard.battle_plan.position_strategy"] = (
         battle.get("position_strategy") if isinstance(battle, dict) else None,
         {
-            "suggested_position": "不新增仓位",
+            "suggested_position": (
+                "不新增仓位"
+                if scope == "p0" or decision["public_action"] != "watch"
+                else "等待条件确认"
+            ),
             "entry_plan": summary.get("action_condition", not_applicable),
             "risk_control": summary.get("invalidation_condition", not_applicable),
         },
@@ -1138,10 +1199,67 @@ def _brief_timeframe_projection(mtf_context, key, role):
     }
 
 
-def _build_asset_research_brief_v1(trend_result, summary):
+def _brief_timeframe_sentence(label: str, item: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(item, dict):
+        return None
+    if str(item.get("status") or "") not in {"READY", "PROVEN_CURRENT", "PARTIAL_CURRENT"}:
+        return None
+    text = str(item.get("summary") or "").strip().rstrip("。；;")
+    if not text:
+        return None
+    return text if text.startswith(label) else f"{label}{text}"
+
+
+def _material_event_sentences(summary: Dict[str, Any]) -> List[str]:
+    events: List[str] = []
+    volatility = _mapping(_mapping(summary.get("volatility_momentum_evidence")).get("context"))
+    divergence = _mapping(volatility.get("confirmed_divergence"))
+    if str(divergence.get("status") or "").upper() == "READY":
+        state = str(divergence.get("state") or "").upper()
+        if state == "BULLISH_DIVERGENCE":
+            events.append("日线底背离已经确认")
+        elif state == "BEARISH_DIVERGENCE":
+            events.append("日线顶背离已经确认")
+
+    pattern = _mapping(_mapping(summary.get("pattern_trigger_evidence")).get("context"))
+    primary = _mapping(pattern.get("primary_pattern"))
+    if primary:
+        pattern_type = str(primary.get("pattern_type") or "")
+        subtype = str(primary.get("subtype") or "")
+        label = {
+            "CUP_BASE": "杯形基底",
+            "DOUBLE_BOTTOM_BASE": "双底基底",
+            "CONTRACTION_BASE": {
+                "VCP": "VCP",
+                "FLAT_BASE": "平坦基底",
+                "TIGHT_CONSOLIDATION": "紧密整理",
+            }.get(subtype, "收缩基底"),
+        }.get(pattern_type, "基底形态")
+        lifecycle = str(primary.get("lifecycle") or "").upper()
+        if lifecycle == "CONFIRMED":
+            volume_confirmation = str(
+                _mapping(primary.get("volume_evidence_ref")).get("confirmation") or ""
+            ).upper()
+            state_text = (
+                "已经放量突破确认"
+                if volume_confirmation == "CONFIRMED"
+                else "已经突破确认"
+            )
+        else:
+            state_text = {
+                "FORMING": "形成中",
+                "FAILED": "突破失败",
+            }.get(lifecycle)
+        if state_text:
+            events.append(f"日线{label}{state_text}")
+    return list(dict.fromkeys(events))
+
+
+def _build_asset_research_brief_v1(trend_result, summary, *, asset_type: str = "stock"):
     summary = summary if isinstance(summary, dict) else {}
     sections = summary.get("sections")
     sections = sections if isinstance(sections, dict) else {}
+    asset_type = "etf" if str(asset_type or "").lower() == "etf" else "stock"
 
     conclusion = str(summary.get("conclusion") or "").strip()
     trigger = str(summary.get("action_condition") or "").strip()
@@ -1193,14 +1311,21 @@ def _build_asset_research_brief_v1(trend_result, summary):
     trend = _asset_brief_v1_text(
         sections.get("trend"), ("\u8d8b\u52bf\uff1a", "\u8d8b\u52bf:")
     )
+    trend_relative = _asset_brief_v1_text(
+        sections.get("trend_relative_strength"), ("趋势/相对强弱：", "趋势/相对强弱:")
+    )
     volume_price = _asset_brief_v1_text(
         sections.get("volume_price"), ("\u91cf\u4ef7\uff1a", "\u91cf\u4ef7:")
+    )
+    supply_demand = _asset_brief_v1_text(
+        sections.get("supply_demand_volume_price"), ("供需/量价：", "供需/量价:")
     )
     structure = _asset_brief_v1_text(
         sections.get("price_structure"), ("\u7ed3\u6784\uff1a", "\u7ed3\u6784:")
     )
     valuation = _asset_brief_v1_text(
-        sections.get("valuation"), ("\u4f30\u503c\uff1a", "\u4f30\u503c:")
+        sections.get("valuation"),
+        ("\u4f30\u503c\uff1a", "\u4f30\u503c:", "底层估值：", "底层估值:"),
     )
     cost = _asset_brief_v1_text(
         sections.get("cost_structure"),
@@ -1212,29 +1337,31 @@ def _build_asset_research_brief_v1(trend_result, summary):
     pattern_trigger = _asset_brief_v1_text(
         sections.get("pattern_trigger"), ("形态/触发：", "形态/触发:")
     )
+    valuation_displayable = (
+        _asset_brief_v1_usable(valuation)
+        or "已取得基础估值数据" in str(valuation or "")
+    )
 
-    clauses = []
-    if price_text and trend:
-        clauses.append(f"\u5f53\u524d\u4ef7 {price_text} \u5143\uff0c\u65e5\u7ebf{trend}")
-    elif price_text:
-        clauses.append(f"\u5f53\u524d\u4ef7 {price_text} \u5143")
-    elif trend:
-        clauses.append(f"\u65e5\u7ebf{trend}")
-
-    # First-screen causal thesis prioritizes observable supply/demand and chip-cost
-    # evidence before valuation/shape detail; it never infers institutional intent.
-    for candidate in (volume_price, pattern_trigger, cost, valuation, structure, momentum):
-        if _asset_brief_v1_usable(candidate) and candidate not in clauses:
-            clauses.append(candidate)
-        if len(clauses) >= 4:
-            break
-
-    daily_components = [
-        item
-        for item in (trend, volume_price, pattern_trigger, structure, momentum)
-        if _asset_brief_v1_usable(item)
-    ]
-    daily_thesis = "\uff1b".join(daily_components[:3]) or None
+    material_events = _material_event_sentences(summary)
+    supply_component = supply_demand if _asset_brief_v1_usable(supply_demand) else volume_price
+    momentum_component = momentum
+    if momentum_component and any("背离" in event for event in material_events):
+        momentum_component = "；".join(
+            part
+            for part in momentum_component.split("；")
+            if "背离" not in part
+        ).strip("；")
+    daily_components: List[str] = []
+    for item in (
+        trend_relative or trend,
+        supply_component,
+        structure,
+        momentum_component,
+        cost if asset_type == "stock" else None,
+    ):
+        if _asset_brief_v1_usable(item) and item not in daily_components:
+            daily_components.append(item)
+    daily_thesis = "；".join(daily_components[:5]) or None
 
     mtf_context = _mapping(summary.get("multi_timeframe_structure_context"))
     monthly_thesis = _brief_timeframe_projection(mtf_context, "monthly", "LONG_TERM_CONTEXT")
@@ -1254,34 +1381,62 @@ def _build_asset_research_brief_v1(trend_result, summary):
         "15m": "MISSING",
         "5m": "MISSING",
     }
-    if mtf_context:
-        ready_labels = []
-        if monthly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
-            ready_labels.append("月线")
-        if weekly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
-            ready_labels.append("周线")
-        ready_labels.append("日线")
-        coverage_text = (
-            f"当前证据覆盖：{'、'.join(ready_labels)}已进入确定性分析；"
-            "未就绪的高周期保持数据不足，60分钟、30分钟、15分钟和5分钟"
-            "尚未进入生产判断。"
-        )
-    else:
-        coverage_text = (
-            "\u5f53\u524d\u8bc1\u636e\u8986\u76d6\uff1a\u65e5\u7ebf\u5df2\u5206\u6790\uff1b"
-            "\u6708\u7ebf\u3001\u5468\u7ebf\u300160\u5206\u949f\u300130\u5206\u949f\u300115\u5206\u949f\u548c5\u5206\u949f"
-            "\u5c1a\u672a\u8fdb\u5165\u751f\u4ea7\u5224\u65ad\u3002"
-        )
+    ready_labels = ["日线"]
+    if monthly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
+        ready_labels.insert(0, "月线")
+    if weekly_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
+        insert_at = 1 if "月线" in ready_labels else 0
+        ready_labels.insert(insert_at, "周线")
+    if bridge_thesis["status"] in {"READY", "PARTIAL_CURRENT"}:
+        ready_labels.append("60分钟")
+    missing_labels = []
+    for label, status in (
+        ("月线", monthly_thesis["status"]),
+        ("周线", weekly_thesis["status"]),
+        ("60分钟", bridge_thesis["status"]),
+        ("30分钟", coverage["30m"]),
+        ("15分钟", coverage["15m"]),
+        ("5分钟", coverage["5m"]),
+    ):
+        if status not in {"READY", "PARTIAL_CURRENT"}:
+            missing_labels.append(label)
+    coverage_text = f"当前证据覆盖：{'、'.join(ready_labels)}已进入分析。"
+    if missing_labels:
+        coverage_text += f"{'、'.join(missing_labels)}尚未进入生产判断。"
 
-    paragraph = "\uff1b".join(clauses[:4]).strip()
-    if paragraph:
-        paragraph += "\u3002"
-    paragraph += f"\u7efc\u5408\u6765\u770b\uff0c{conclusion}"
+    paragraph_parts: List[str] = []
+    if price_text:
+        unit = "元" if asset_type == "stock" else ""
+        paragraph_parts.append(f"当前价格 {price_text}{unit}")
+    for label, item in (("月线", monthly_thesis), ("周线", weekly_thesis)):
+        sentence = _brief_timeframe_sentence(label, item)
+        if sentence:
+            paragraph_parts.append(sentence)
+    if daily_thesis:
+        daily_sentence = _brief_timeframe_sentence(
+            "日线",
+            {"status": "PARTIAL_CURRENT", "summary": daily_thesis},
+        )
+        if daily_sentence:
+            paragraph_parts.append(daily_sentence)
+    for event in material_events:
+        if not any(event in part for part in paragraph_parts):
+            paragraph_parts.append(event)
+    if valuation_displayable:
+        paragraph_parts.append(
+            f"{'底层估值' if asset_type == 'etf' else '估值'}：{valuation}"
+        )
+    if conclusion:
+        paragraph_parts.append(conclusion)
+    paragraph = "。".join(part.rstrip("。") for part in paragraph_parts if part).strip()
+    if paragraph and not paragraph.endswith("。"):
+        paragraph += "。"
 
     return {
         "schema_version": "investor-brief-v1",
         "report_mode": "ASSET_RESEARCH_BRIEF",
         "report_version": "asset-research-brief-v1",
+        "asset_type": asset_type,
         "coverage": coverage,
         "coverage_text": coverage_text,
         "timeframe_thesis": {
@@ -1294,6 +1449,7 @@ def _build_asset_research_brief_v1(trend_result, summary):
             },
             "60m": bridge_thesis,
         },
+        "material_events": material_events,
         "short_term_execution_panel": {
             "status": "MISSING",
             "state": "DATA_INSUFFICIENT",
@@ -1339,13 +1495,29 @@ def _build_asset_research_brief_v1(trend_result, summary):
         "invalidation": invalidation,
         "risk_notes": risks,
         "valuation": {
-            "status": "PARTIAL_CURRENT" if _asset_brief_v1_usable(valuation) else "MISSING",
-            "summary": valuation if _asset_brief_v1_usable(valuation) else "",
+            "status": "PARTIAL_CURRENT" if valuation_displayable else "MISSING",
+            "label": "底层估值" if asset_type == "etf" else "估值",
+            "summary": valuation if valuation_displayable else "",
             "uncertainty": (
-                "\u5c1a\u672a\u7ed1\u5b9a\u53ef\u9760\u5408\u7406\u4ef7\u683c\u533a\u95f4"
-                "\u3001\u5386\u53f2\u5206\u4f4d\u4e0e\u540c\u884c\u6bd4\u8f83\u3002"
+                ""
+                if valuation_displayable
+                else (
+                    "尚未绑定可靠底层历史分位与同类比较。"
+                    if asset_type == "etf"
+                    else "尚未绑定可靠合理价格区间、历史分位与同行比较。"
+                )
             ),
         },
+        "asset_specific": (
+            {
+                "underlying_valuation": {"status": "MISSING"},
+                "premium_discount": {"status": "MISSING"},
+                "liquidity_spread": {"status": "MISSING"},
+                "tracking_quality": {"status": "MISSING"},
+            }
+            if asset_type == "etf"
+            else {}
+        ),
         "historical_reference": {
             "available": False,
             "reason": (
@@ -1376,6 +1548,7 @@ def build_stock_factor_decision_summary(
     pattern_trigger_context: Optional[Dict[str, Any]] = None,
     multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     include_canonical: bool = False,
+    asset_type: str = "stock",
 ) -> Dict[str, Any]:
     """Build a deterministic, human-readable stock summary for report rendering.
 
@@ -1385,6 +1558,7 @@ def build_stock_factor_decision_summary(
     actually bound and calibrated.
     """
 
+    asset_type = "etf" if str(asset_type or "").lower() == "etf" else "stock"
     if trend_result is None and not include_canonical:
         raise ValueError("trend_result is required")
 
@@ -1413,11 +1587,21 @@ def build_stock_factor_decision_summary(
         volatility_momentum_context,
     )
     pattern_trigger_evidence = _build_pattern_trigger_evidence(pattern_trigger_context)
+    authority = _ETF_CANONICAL_AUTHORITY if asset_type == "etf" else _CANONICAL_AUTHORITY
     canonical_decision = (
-        _canonical_decision(trend_result, market_sector_regime)
+        _canonical_decision(trend_result, market_sector_regime, authority=authority)
         if include_canonical
         else None
     )
+    if asset_type == "etf" and canonical_decision is not None:
+        canonical_decision = {
+            "authority": authority,
+            "action": "WAIT",
+            "public_action": "watch",
+            "evidence_state": "UNKNOWN",
+            "hard_veto": False,
+            "reason_codes": ["ETF_SPECIFIC_EVIDENCE_INCOMPLETE"],
+        }
     raw_score = _safe_float(getattr(trend_result, "signal_score", None))
     score = (
         int(max(0, min(100, round(raw_score))))
@@ -1429,8 +1613,16 @@ def build_stock_factor_decision_summary(
     if "nearest_support" in structured_context:
         support = _price_structure_level(price_structure_evidence, "nearest_support")
 
-    valuation = _valuation_summary(fundamental_context)
-    cost_structure = _cost_structure_evidence_summary(cost_structure_evidence, chip_data)
+    valuation = (
+        "底层估值：数据不足，暂不判断高低。"
+        if asset_type == "etf"
+        else _valuation_summary(fundamental_context)
+    )
+    cost_structure = (
+        "成本/筹码：ETF不适用个股筹码口径。"
+        if asset_type == "etf"
+        else _cost_structure_evidence_summary(cost_structure_evidence, chip_data)
+    )
     sections = {
         "trend": _trend_summary(trend_result),
         "volume_price": _volume_price_summary(trend_result),
@@ -1445,23 +1637,45 @@ def build_stock_factor_decision_summary(
     }
 
     why: List[str] = []
-    for key in ("trend", "volume_price", "price_structure", "valuation"):
+    for key in (
+        "market_sector_regime",
+        "trend_relative_strength",
+        "supply_demand_volume_price",
+        "price_structure",
+        "valuation",
+    ):
         text = sections[key]
-        if text not in why:
+        if text not in why and _asset_brief_v1_usable(text):
             why.append(text)
 
     if support is not None:
-        action_condition = (
-            f"若价格在主要支撑 {_format_price(support)} 上方企稳，并出现量价重新转强，可升级为买入候选。"
-        )
+        if asset_type == "etf":
+            action_condition = (
+                f"若价格在主要支撑 {_format_price(support)} 上方企稳、量价重新转强，"
+                "且ETF专属估值与交易质量证据完整，再提高关注级别。"
+            )
+        else:
+            action_condition = (
+                f"若价格在主要支撑 {_format_price(support)} 上方企稳，并出现量价重新转强，可升级为买入候选。"
+            )
         invalidation_condition = (
             f"若放量有效跌破主要支撑 {_format_price(support)}，则取消原判断。"
         )
     else:
-        action_condition = "若回调后止跌并出现量价重新转强，可重新评估买入条件。"
+        action_condition = (
+            "若回调后止跌、量价重新转强，且ETF专属估值与交易质量证据完整，再提高关注级别。"
+            if asset_type == "etf"
+            else "若回调后止跌并出现量价重新转强，可重新评估买入条件。"
+        )
         invalidation_condition = "若趋势转弱并伴随放量下跌，则取消原判断。"
 
-    if canonical_decision and canonical_decision["evidence_state"] == "UNKNOWN":
+    if (
+        asset_type == "etf"
+        and canonical_decision
+        and canonical_decision["evidence_state"] == "UNKNOWN"
+    ):
+        conclusion = "ETF专属估值与交易质量证据尚未完整，当前以观察为主。"
+    elif canonical_decision and canonical_decision["evidence_state"] == "UNKNOWN":
         conclusion = "数据不足，暂不采取买卖动作；等待必需趋势、评分与量价证据完整。"
     elif canonical_decision and canonical_decision["action"] == "PASS":
         conclusion = "风险或弱势条件触发，当前回避新增仓位；等待条件修复后再评估。"
@@ -1469,7 +1683,8 @@ def build_stock_factor_decision_summary(
         conclusion = _conclusion(trend_result, score if score is not None else 0)
 
     summary = {
-        "strategy_id": "stock_trend_quality_pullback_v1",
+        "strategy_id": authority,
+        "asset_type": asset_type,
         "contract_version": "1.0",
         "composite_score": score,
         "score_note": (
@@ -1507,5 +1722,6 @@ def build_stock_factor_decision_summary(
     summary["investor_brief"] = _build_asset_research_brief_v1(
         trend_result,
         summary,
+        asset_type=asset_type,
     )
     return summary

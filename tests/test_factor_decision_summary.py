@@ -549,7 +549,8 @@ def test_volatility_momentum_is_first_class_observational_evidence_without_actio
     assert summary["canonical_decision"]["action"] == "WAIT"
     assert "20日实现波动率年化 22.5%" in summary["sections"]["momentum"]
     assert "顶背离" in summary["sections"]["momentum"]
-    assert "不自动切换策略" in summary["sections"]["momentum"]
+    assert "不自动切换策略" not in summary["sections"]["momentum"]
+    assert evidence["automatic_strategy_switching"] is False
 
 
 def test_missing_structured_volatility_momentum_context_preserves_legacy_momentum_projection():
@@ -602,8 +603,9 @@ def test_pattern_trigger_is_first_class_observational_evidence_and_reaches_inves
     assert evidence["automatic_strategy_switching"] is False
     assert summary["canonical_decision"]["action"] == "WAIT"
     assert "双底基底" in summary["sections"]["pattern_trigger"]
-    assert "Price Structure" in summary["sections"]["pattern_trigger"]
-    assert "独立动作权限" in summary["sections"]["pattern_trigger"]
+    assert "已经突破确认" in summary["sections"]["pattern_trigger"]
+    assert "Price Structure" not in summary["sections"]["pattern_trigger"]
+    assert "独立动作权限" not in summary["sections"]["pattern_trigger"]
     assert "双底基底" in summary["investor_brief"]["fused_paragraph"]
 
 
@@ -668,7 +670,7 @@ def test_asset_research_brief_payload_v1_is_daily_first_and_fail_closed():
         "15m": "MISSING",
         "5m": "MISSING",
     }
-    assert "\u5f53\u524d\u4ef7 10.50 \u5143" in brief["fused_paragraph"]
+    assert "当前价格 10.50元" in brief["fused_paragraph"]
     assert "90%\u7b79\u7801\u96c6\u4e2d\u5ea6 12.00" in brief["fused_paragraph"]
     assert "\u5f53\u524d\u8bc1\u636e\u8986\u76d6" in brief["coverage_text"]
     assert brief["historical_reference"]["available"] is False

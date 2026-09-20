@@ -2328,14 +2328,19 @@ class StockAnalysisPipeline:
         pattern_trigger_context: Optional[Dict[str, Any]] = None,
         multi_timeframe_structure_context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Attach the factor summary and, in P0, finalize canonical public actions."""
+        """Attach one asset-aware factor summary and finalize canonical public actions."""
         is_index_or_etf = SearchService.is_index_or_etf(
             code, getattr(result, "name", "")
         )
-        if is_index_or_etf:
+        normalized_code = str(code or "").strip().split(".")[0]
+        is_market_index = is_us_index_code(normalized_code)
+        if is_market_index:
             if self.p0_bounded_trial:
                 raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
             return
+        if is_index_or_etf and self.p0_bounded_trial:
+            raise P0BoundedTrialError(f"P0 rejects ETF or index result: {code}")
+        asset_type = "etf" if is_index_or_etf else "stock"
         if trend_result is None and not self.p0_bounded_trial:
             return
         report_language = normalize_report_language(
@@ -2362,7 +2367,8 @@ class StockAnalysisPipeline:
                 volatility_momentum_context=volatility_momentum_context,
                 pattern_trigger_context=pattern_trigger_context,
                 multi_timeframe_structure_context=multi_timeframe_structure_context,
-                include_canonical=self.p0_bounded_trial,
+                include_canonical=True,
+                asset_type=asset_type,
             )
         except Exception as exc:
             if self.p0_bounded_trial:
@@ -2374,9 +2380,9 @@ class StockAnalysisPipeline:
         if not isinstance(result.dashboard, dict):
             result.dashboard = {}
         result.dashboard["factor_decision"] = summary
-        if self.p0_bounded_trial:
-            apply_canonical_decision_to_result(result, summary)
-            assert_canonical_consumer_consistency(result)
+        canonical_scope = "p0" if self.p0_bounded_trial else "production"
+        apply_canonical_decision_to_result(result, summary, scope=canonical_scope)
+        assert_canonical_consumer_consistency(result, scope=canonical_scope)
 
     def _promote_p0_deterministic_result_after_explanation_failure(
         self,

@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 增加 immutable PIT Dataset manifest foundation：复用 Prediction Ledger / PredictionOutcome 身份，以 XSHG session 分组的 60/20/20 chronological split、label interval + available-at purge 与 SEALED FINAL_TEST 记录训练样本分配；manifest 不复制 feature/label 值，LOCAL_DB_ONLY、durable bytes、正式 cost identity 或 PIT gap 未闭合时保持 TRAINING_ADMISSION=BLOCKED，不提前安装或训练 ML 模型。
 - [改进] 增加默认关闭的跨运行 research-state durability binding：每日分析在显式启用后先从 immutable package chain restore 到现有 DSA SQLite，仅在分析 step 成功后 publish；缺失/非法 R2 配置、restore 失败、运行失败或取消均 fail-closed，不新增第二数据库/调度器，默认未启用时保持零 R2 调用。
 - [修复] 将资产研究的完整审计报告与 Email/Telegram 投资者通知拆成同一 canonical evidence/decision object 的不同投影：本地保存继续保留详细证据，Email/Telegram 优先发送精简的 `investor-brief-v1` 第一屏，不再要求保存报告与通知字节完全相同；缺失月/周/分钟周期用人类可读的“尚未进入生产判断/数据不足”表达，不泄漏内部 `MISSING` 状态码。
+- [改进] 资产研究简报 Phase A 将 normal Production 与 P0 统一到同一 deterministic canonical action/consumer consistency，保留 P0 既有边界并为 ETF 接入共享多周期人类简报；首屏融合月/周/日趋势、相对强弱、供需量价、confirmed 背离与形态事件，ETF 未证明的底层估值/折溢价/点差/跟踪质量保持显式缺失，30m/15m/5m 未就绪时不补写；Email/Telegram 可按资产类型显示“估值/底层估值”并在未来数据 READY 时逐周期渲染 30/15/5 分钟证据。
 - [修复] Web 分享图改为用户点击“分享”后才按需生成，不再在报告加载时自动请求
 - [修复] 将 `SCREENING_ENABLED` 及 Web 选股功能开关归入“基础设置”，选股导航入口继续由该开关控制
 - [修复] 飞书交互机器人在 `FEISHU_DOMAIN=lark` 时让 Stream 长连接与消息回复统一使用 Lark 国际版 API 域名，避免 SDK 默认连接飞书国内域名并返回 `Incorrect domain name`（fixes #937）。

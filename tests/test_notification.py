@@ -1088,6 +1088,57 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             )
 
     @mock.patch("src.notification.get_config")
+    def test_etf_valuation_label_and_explicit_short_timeframes_render_from_same_brief(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        brief["asset_type"] = "etf"
+        brief["valuation"] = {
+            "status": "PARTIAL_CURRENT",
+            "label": "底层估值",
+            "summary": "近十年62%分位",
+            "uncertainty": "",
+        }
+        brief["short_term_execution_panel"] = {
+            "status": "READY",
+            "state": "WAIT_FOR_TRIGGER",
+            "30m": {
+                "status": "READY",
+                "role": "PRIMARY_STRUCTURE",
+                "summary": "顶背离已经确认",
+            },
+            "15m": {
+                "status": "READY",
+                "role": "TRIGGER_CONFIRMATION",
+                "summary": "死叉后进入整理",
+            },
+            "5m": {
+                "status": "READY",
+                "role": "MICRO_TIMING",
+                "summary": "量能继续收缩",
+            },
+            "summary": None,
+        }
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            full = service.generate_dashboard_report(
+                [result],
+                report_date="2026-09-14",
+            )
+            compact = service.generate_brief_report([result])
+
+            for rendered in (full, compact):
+                self.assertIn("**底层估值**: 近十年62%分位", rendered)
+                self.assertIn("30分钟：顶背离已经确认", rendered)
+                self.assertIn("15分钟：死叉后进入整理", rendered)
+                self.assertIn("5分钟：量能继续收缩", rendered)
+
+    @mock.patch("src.notification.get_config")
     def test_degraded_explanation_status_is_transparent_and_does_not_duplicate_legacy_sections(
         self, mock_get_config: mock.MagicMock
     ):
@@ -1116,6 +1167,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             )
             self.assertNotIn("旧核心结论（不得出现）", out)
             self.assertNotIn("旧因子结论（不得重复）", out)
+            compact = NotificationService().generate_brief_report([result])
+            self.assertNotIn("LLM 暂不可用", compact)
+            self.assertNotIn("解释层", compact)
 
     @mock.patch("src.notification.get_config")
     def test_asset_investor_brief_suppresses_unbound_llm_evidence_panels_and_generic_levels(

@@ -48,6 +48,7 @@ def screen(
     strategy: str,
     *,
     market: str = "cn",
+    asset_type: str = "stock",
     max_output: int | None = None,
     use_llm: bool = True,
     llm_context: str | None = None,
@@ -71,11 +72,12 @@ def screen(
     progress_callback: Callable[[int, str], None] | None = None,
     daily_history_fetcher: Callable[..., pd.DataFrame] | None = None,
 ) -> ScreenResult:
-    """Execute stock screening with the given strategy.
+    """Execute asset screening with the given strategy.
 
     Args:
         strategy: Strategy name (matches a YAML file in strategies/).
         market: Market scope, currently only "cn".
+        asset_type: stock (default) or the bounded A-share etf route.
         max_output: Override max output count from strategy.
         use_llm: Whether to use LLM for L2 ranking.
         llm_context: Optional market/news/theme context supplied to the LLM ranker.
@@ -110,6 +112,10 @@ def screen(
 
     if market not in ("cn", "us"):
         raise ValueError(f"Unsupported market: {market!r} (supported: cn, us)")
+    if asset_type not in ("stock", "etf"):
+        raise ValueError(f"Unsupported asset_type: {asset_type!r}")
+    if asset_type == "etf" and market != "cn":
+        raise ValueError("ETF AUTO_SCREEN currently supports market='cn' only")
 
     run_id = uuid.uuid4().hex[:12]
     degradation: list[str] = []
@@ -151,6 +157,7 @@ def screen(
         fallback_max_age_hours=config.snapshot_fallback_max_age_hours,
         cache_ttl_seconds=config.snapshot_cache_ttl_seconds,
         market=market,
+        asset_type=asset_type,
     )
     effective_industry_map_files = (
         list(industry_map_files)

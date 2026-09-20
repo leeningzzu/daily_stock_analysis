@@ -62,6 +62,52 @@ def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
         raise ValueError(f"Unknown snapshot source: {source}")
 
 
+def fetch_cn_etf_snapshot() -> pd.DataFrame:
+    """Adapt the existing DSA ETF provider snapshot into Screening schema."""
+    from data_provider.akshare_fetcher import AkshareFetcher
+
+    raw = AkshareFetcher().get_etf_realtime_snapshot()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    aliases = {
+        "code": "代码",
+        "name": "名称",
+        "price": "最新价",
+        "change_pct": "涨跌幅",
+        "amount": "成交额",
+        "total_mv": "总市值",
+        "circ_mv": "流通市值",
+        "volume_ratio": "量比",
+        "turnover_rate": "换手率",
+    }
+    result = pd.DataFrame(index=raw.index)
+    for target, source in aliases.items():
+        result[target] = raw[source] if source in raw.columns else pd.NA
+    result["code"] = result["code"].astype(str).str.strip().str.zfill(6)
+    result["name"] = result["name"].fillna("").astype(str)
+    for column in (
+        "price",
+        "change_pct",
+        "amount",
+        "total_mv",
+        "circ_mv",
+        "volume_ratio",
+        "turnover_rate",
+    ):
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result["pe_ratio"] = pd.NA
+    result["pb_ratio"] = pd.NA
+    result["industry"] = "ETF"
+    result = result[result["code"].str.match(r"^(51|52|56|58|15|16|18)\d{4}$", na=False)]
+    result.attrs["snapshot_source"] = "dsa:akshare_etf"
+    result.attrs["source_errors"] = []
+    result.attrs["fallback_used"] = False
+    result.attrs["stale"] = False
+    result.attrs["stale_age_hours"] = None
+    return result.reset_index(drop=True)
+
+
 def fetch_snapshot_with_fallback(
     sources: list[str],
     *,
@@ -70,10 +116,21 @@ def fetch_snapshot_with_fallback(
     fallback_max_age_hours: float | None = None,
     cache_ttl_seconds: float = 0.0,
     market: str = "cn",
+    asset_type: str = "stock",
 ) -> pd.DataFrame:
     """Try live sources, optionally falling back to the last-good snapshot."""
     if market == "us":
+        if asset_type != "stock":
+            raise ValueError("US ETF AUTO_SCREEN is not admitted by the current product contract")
         return _fetch_us_snapshot_with_fallback(required_columns)
+    if asset_type == "etf":
+        df = fetch_cn_etf_snapshot()
+        missing = _missing_required_columns(df, required_columns or [])
+        if missing:
+            raise RuntimeError(f"ETF snapshot missing required columns: {','.join(missing)}")
+        return df
+    if asset_type != "stock":
+        raise ValueError(f"Unsupported screening asset_type: {asset_type!r}")
 
     errors = []
     required = required_columns or []

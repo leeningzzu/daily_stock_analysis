@@ -91,6 +91,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "stocks": None,
             "auto_screen": False,
             "auto_screen_max_results": 1,
+            "auto_screen_etf_max_results": 0,
+            "watchlist_conditional": False,
             "auto_screen_bounded_live": False,
             "portfolio": None,
             "webui": False,
@@ -546,6 +548,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             strategy="momentum_quality",
             market="cn",
             max_results=2,
+            etf_max_results=0,
             raise_errors=True,
             bounded_live=False,
         )

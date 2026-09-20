@@ -82,7 +82,7 @@ from src.services.price_structure_service import build_price_structure_context
 from src.services.volatility_momentum_service import build_volatility_momentum_context
 from src.services.pattern_trigger_service import build_pattern_trigger_context
 from src.services.multi_timeframe_structure_service import build_multi_timeframe_structure_context
-from src.services.pit_identity import normalize_research_selection_context
+from src.services.pit_identity import normalize_research_selection_context, sha256_payload
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -998,6 +998,10 @@ class StockAnalysisPipeline:
                     volatility_momentum_context=volatility_momentum_context,
                     pattern_trigger_context=pattern_trigger_context,
                     multi_timeframe_structure_context=multi_timeframe_structure_context,
+                )
+                self._attach_research_delivery_state(
+                    result,
+                    query_id=query_id,
                 )
                 self._promote_p0_deterministic_result_after_explanation_failure(
                     result,
@@ -2385,6 +2389,256 @@ class StockAnalysisPipeline:
         apply_canonical_decision_to_result(result, summary, scope=canonical_scope)
         assert_canonical_consumer_consistency(result, scope=canonical_scope)
 
+    @staticmethod
+    def _delivery_fact_projection(factor: Any) -> Dict[str, Any]:
+        """Project deterministic material-change facts without LLM prose."""
+        if not isinstance(factor, dict):
+            return {}
+
+        canonical = factor.get("canonical_decision")
+        canonical_projection = {}
+        if isinstance(canonical, dict):
+            canonical_projection = {
+                key: canonical.get(key)
+                for key in (
+                    "authority",
+                    "action",
+                    "public_action",
+                    "evidence_state",
+                    "hard_veto",
+                    "reason_codes",
+                )
+            }
+
+        def compact_state(value: Any) -> Any:
+            if isinstance(value, dict):
+                kept = {}
+                for key, item in value.items():
+                    key_text = str(key or "")
+                    if key_text in {
+                        "state",
+                        "status",
+                        "evidence_state",
+                        "hard_veto",
+                        "reason_codes",
+                        "lifecycle",
+                        "pattern_state",
+                        "confirmed",
+                        "provisional",
+                        "invalidation",
+                        "action",
+                        "public_action",
+                    }:
+                        kept[key_text] = item
+                    elif isinstance(item, (dict, list)):
+                        nested = compact_state(item)
+                        if nested not in ({}, [], None):
+                            kept[key_text] = nested
+                return kept
+            if isinstance(value, list):
+                compacted = [compact_state(item) for item in value]
+                return [item for item in compacted if item not in ({}, [], None)]
+            return None
+
+        evidence_projection = {}
+        for key in (
+            "market_sector_regime",
+            "trend_relative_strength",
+            "supply_demand_volume_price",
+            "cost_structure_evidence",
+            "price_structure_evidence",
+            "volatility_momentum_evidence",
+            "pattern_trigger_evidence",
+            "multi_timeframe_structure_context",
+        ):
+            compacted = compact_state(factor.get(key))
+            if compacted not in ({}, [], None):
+                evidence_projection[key] = compacted
+
+        brief = factor.get("investor_brief")
+        brief_projection = {}
+        if isinstance(brief, dict):
+            valuation = brief.get("valuation")
+            key_levels = brief.get("key_levels")
+            brief_projection = {
+                "asset_type": brief.get("asset_type"),
+                "trigger": brief.get("trigger"),
+                "invalidation": brief.get("invalidation"),
+                "valuation": (
+                    {
+                        key: valuation.get(key)
+                        for key in ("status", "bucket")
+                        if valuation.get(key) not in (None, "")
+                    }
+                    if isinstance(valuation, dict)
+                    else {}
+                ),
+                "key_levels": (
+                    {
+                        key: key_levels.get(key)
+                        for key in ("support", "resistance")
+                        if key_levels.get(key) not in (None, "")
+                    }
+                    if isinstance(key_levels, dict)
+                    else {}
+                ),
+            }
+
+        return {
+            "strategy_id": factor.get("strategy_id"),
+            "asset_type": factor.get("asset_type"),
+            "canonical_decision": canonical_projection,
+            "evidence_states": evidence_projection,
+            "brief": brief_projection,
+        }
+
+    @classmethod
+    def _delivery_fact_hash(cls, factor: Any) -> Optional[str]:
+        projection = cls._delivery_fact_projection(factor)
+        if not projection or not projection.get("canonical_decision"):
+            return None
+        return sha256_payload(projection)
+
+    @staticmethod
+    def _dashboard_from_history_record(record: Any) -> Optional[Dict[str, Any]]:
+        raw = getattr(record, "raw_result", None)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        dashboard = payload.get("dashboard")
+        return dashboard if isinstance(dashboard, dict) else None
+
+    @classmethod
+    def _factor_from_history_record(cls, record: Any) -> Optional[Dict[str, Any]]:
+        dashboard = cls._dashboard_from_history_record(record)
+        if not isinstance(dashboard, dict):
+            return None
+        factor = dashboard.get("factor_decision")
+        return factor if isinstance(factor, dict) else None
+
+    @classmethod
+    def _history_selection_source(cls, record: Any) -> str:
+        dashboard = cls._dashboard_from_history_record(record)
+        if not isinstance(dashboard, dict):
+            return ""
+        delivery = dashboard.get("research_delivery")
+        if isinstance(delivery, dict):
+            source = str(delivery.get("selection_source") or "").strip()
+            if source:
+                return source
+        context = dashboard.get("research_selection_context")
+        if isinstance(context, dict):
+            return str(context.get("selection_source") or "").strip()
+        return ""
+
+    def _attach_research_delivery_state(
+        self,
+        result: AnalysisResult,
+        *,
+        query_id: str,
+    ) -> None:
+        context = normalize_research_selection_context(
+            getattr(self, "research_selection_context", None)
+        )
+        selection_source = str(context.get("selection_source") or "SPECIFIED_CODES")
+        envelope = str(context.get("delivery_envelope") or "")
+        dashboard = (
+            result.dashboard
+            if isinstance(getattr(result, "dashboard", None), dict)
+            else {}
+        )
+        if not isinstance(result.dashboard, dict):
+            result.dashboard = dashboard
+        dashboard["research_selection_context"] = context
+
+        factor = dashboard.get("factor_decision")
+        if not isinstance(factor, dict):
+            return
+        asset_type = str(factor.get("asset_type") or "stock")
+        current_hash = self._delivery_fact_hash(factor)
+        delivery = {
+            "schema_version": "research-delivery-v1",
+            "selection_source": selection_source,
+            "delivery_envelope": envelope or None,
+            "asset_type": asset_type,
+            "canonical_fact_hash": current_hash,
+            "product_group": None,
+            "group_rank": None,
+            "material_change": None,
+            "material_change_reason": "NOT_APPLICABLE",
+        }
+
+        if selection_source == "AUTO_SCREEN":
+            screening = context.get("screening")
+            selected = (
+                screening.get("selected_candidates")
+                if isinstance(screening, dict)
+                else []
+            )
+            normalized_code = normalize_stock_code(
+                str(getattr(result, "code", "") or "")
+            )
+            for candidate in selected or []:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_code = normalize_stock_code(
+                    str(candidate.get("code") or "")
+                )
+                if candidate_code != normalized_code:
+                    continue
+                delivery["product_group"] = candidate.get("product_group")
+                delivery["group_rank"] = candidate.get("group_rank")
+                break
+        elif envelope == "ASSET_RESEARCH_BRIEF_WATCHLIST":
+            delivery["product_group"] = (
+                "WATCHLIST_ETF" if asset_type == "etf" else "WATCHLIST_STOCK"
+            )
+            previous_factor = None
+            history_comparison_failed = False
+            try:
+                records = self.db.get_analysis_history(
+                    code=str(getattr(result, "code", "") or ""),
+                    days=30,
+                    limit=5,
+                    exclude_query_id=query_id,
+                )
+                for record in records:
+                    if self._history_selection_source(record) == "AUTO_SCREEN":
+                        continue
+                    previous_factor = self._factor_from_history_record(record)
+                    if previous_factor is not None:
+                        break
+            except Exception as exc:
+                history_comparison_failed = True
+                logger.warning(
+                    "Watchlist material-change history lookup failed for %s: %s",
+                    getattr(result, "code", ""),
+                    exc,
+                )
+            previous_hash = self._delivery_fact_hash(previous_factor)
+            if not current_hash:
+                delivery["material_change"] = True
+                delivery["material_change_reason"] = "CURRENT_CANONICAL_FACTS_UNAVAILABLE"
+            elif history_comparison_failed:
+                delivery["material_change"] = True
+                delivery["material_change_reason"] = "HISTORY_COMPARISON_UNAVAILABLE"
+            elif not previous_hash:
+                delivery["material_change"] = True
+                delivery["material_change_reason"] = "FIRST_COMPARABLE_ANALYSIS"
+            elif previous_hash != current_hash:
+                delivery["material_change"] = True
+                delivery["material_change_reason"] = "CANONICAL_FACTS_CHANGED"
+            else:
+                delivery["material_change"] = False
+                delivery["material_change_reason"] = "UNCHANGED"
+
+        dashboard["research_delivery"] = delivery
+
     def _promote_p0_deterministic_result_after_explanation_failure(
         self,
         result: Optional[AnalysisResult],
@@ -3543,6 +3797,14 @@ class StockAnalysisPipeline:
 
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)
+        delivery_envelope = str(
+            (getattr(self, "research_selection_context", None) or {}).get(
+                "delivery_envelope"
+            )
+            or ""
+        )
+        if delivery_envelope == "ASSET_RESEARCH_BRIEF_WATCHLIST":
+            single_stock_notify = False
         # Issue #119: 从配置读取报告类型
         report_type_str = getattr(self.config, 'report_type', 'simple').lower()
         if report_type_str == 'brief':
@@ -3648,17 +3910,30 @@ class StockAnalysisPipeline:
             self._save_local_report(results, report_type)
 
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
-        if results and send_notification and not dry_run:
+        notification_results = list(results)
+        if delivery_envelope == "ASSET_RESEARCH_BRIEF_WATCHLIST":
+            notification_results = [
+                result
+                for result in results
+                if isinstance(getattr(result, "dashboard", None), dict)
+                and isinstance(result.dashboard.get("research_delivery"), dict)
+                and result.dashboard["research_delivery"].get("material_change") is True
+            ]
+            if not notification_results:
+                logger.info(
+                    "自选计划无材料变化；完整审计已保存，本轮不发送 WATCHLIST 通知。"
+                )
+        if notification_results and send_notification and not dry_run:
             if single_stock_notify:
                 # 单股推送模式：只保存汇总报告，不再重复推送
                 logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
-                self._send_notifications(results, report_type, skip_push=True)
+                self._send_notifications(notification_results, report_type, skip_push=True)
             elif merge_notification:
                 # 合并模式（Issue #190）：仅保存，不推送，由 main 层合并个股+大盘后统一发送
                 logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
-                self._send_notifications(results, report_type, skip_push=True)
+                self._send_notifications(notification_results, report_type, skip_push=True)
             else:
-                self._send_notifications(results, report_type)
+                self._send_notifications(notification_results, report_type)
         
         return results
 
@@ -3877,7 +4152,16 @@ class StockAnalysisPipeline:
         """保存分析报告到本地文件（与通知推送解耦）"""
         try:
             report = self._generate_aggregate_report(results, report_type)
-            filepath = self.notifier.save_report_to_file(report)
+            delivery_envelope = str(
+                (getattr(self, "research_selection_context", None) or {}).get(
+                    "delivery_envelope"
+                )
+                or ""
+            )
+            filename = None
+            if delivery_envelope == "ASSET_RESEARCH_BRIEF_WATCHLIST":
+                filename = f"report_{datetime.now().strftime('%Y%m%d')}_watchlist.md"
+            filepath = self.notifier.save_report_to_file(report, filename=filename)
             logger.info(f"决策仪表盘日报已保存: {filepath}")
         except Exception as e:
             logger.error(f"保存本地报告失败: {e}")

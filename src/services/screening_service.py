@@ -1731,6 +1731,7 @@ def _call_screening_screen(
     max_results: int,
     config: Config,
     *,
+    asset_type: str = "stock",
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
     use_llm: bool = True,
@@ -1756,6 +1757,8 @@ def _call_screening_screen(
     }
     if post_analyzers is not None:
         screen_kwargs["post_analyzers"] = list(post_analyzers)
+    if asset_type != "stock":
+        screen_kwargs["asset_type"] = asset_type
 
     if not use_llm:
         return run_screening_pipeline(strategy, **screen_kwargs)
@@ -1764,12 +1767,108 @@ def _call_screening_screen(
         return run_screening_pipeline(strategy, **screen_kwargs)
 
 
+def _resolve_auto_screen_bucket(
+    config: Config,
+    *,
+    strategy: str,
+    market: str,
+    max_results: int,
+    asset_type: str,
+    selection_seed: str,
+    progress_callback: Callable[[int, str], None] | None,
+) -> Dict[str, Any]:
+    expected_post_analyzers = ["scorecard"] if asset_type == "stock" else []
+    raw = _call_screening_screen(
+        strategy,
+        market,
+        max_results,
+        config,
+        asset_type=asset_type,
+        selection_seed=selection_seed,
+        progress_callback=progress_callback,
+        use_llm=False,
+        post_analyzers=expected_post_analyzers,
+    )
+    raw_data = _remove_non_finite_json_values(_to_plain(raw))
+    if not isinstance(raw_data, dict):
+        raw_data = {"candidates": raw_data}
+
+    ranking_mode = _env_text(raw_data.get("ranking_mode") or "factor").lower()
+    post_analyzer_names = [
+        _env_text(name).lower()
+        for name in (raw_data.get("post_analyzers") or expected_post_analyzers)
+        if _env_text(name)
+    ]
+    if bool(raw_data.get("llm_ranked")) or ranking_mode == "llm":
+        raise RuntimeError("AUTO_SCREEN deterministic boundary violated: LLM ranking executed")
+    if post_analyzer_names != expected_post_analyzers or bool(raw_data.get("deep_analysis_requested")):
+        raise RuntimeError(
+            "AUTO_SCREEN deterministic boundary violated: remote or unexpected post-analysis executed"
+        )
+
+    normalized_candidates = _normalize_candidates(raw_data)
+    selected: List[Dict[str, Any]] = []
+    codes: List[str] = []
+    seen_codes = set()
+    for candidate in normalized_candidates:
+        if len(codes) >= max_results:
+            break
+        code = _env_text(candidate.get("code")).upper()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        codes.append(code)
+        group_rank = len(codes)
+        group_prefix = "AUTO_ETF" if asset_type == "etf" else "AUTO_STOCK"
+        selected.append(
+            {
+                "rank": candidate.get("rank"),
+                "group_rank": group_rank,
+                "product_group": (
+                    f"{group_prefix}_FOCUS" if group_rank <= 3 else f"{group_prefix}_REMAINING"
+                ),
+                "asset_type": asset_type,
+                "code": code,
+                "name": candidate.get("name") or "",
+                "score": candidate.get("score"),
+                "screen_score": candidate.get("screen_score"),
+                "reason": candidate.get("reason") or "",
+                "risk_level": candidate.get("risk_level") or "",
+                "risk_flags": list(candidate.get("risk_flags") or []),
+                "industry": candidate.get("industry") or "",
+            }
+        )
+
+    return {
+        "asset_type": asset_type,
+        "strategy": raw_data.get("strategy") or strategy,
+        "strategy_version": raw_data.get("strategy_version") or "",
+        "market": raw_data.get("market") or market,
+        "run_id": raw_data.get("run_id") or "",
+        "snapshot_count": raw_data.get("snapshot_count"),
+        "snapshot_source": raw_data.get("snapshot_source") or "",
+        "after_filter_count": raw_data.get("after_filter_count"),
+        "ranking_mode": ranking_mode,
+        "llm_ranked": False,
+        "post_analyzers": post_analyzer_names,
+        "deep_analysis_requested": False,
+        "candidate_count": len(normalized_candidates),
+        "selected_count": len(codes),
+        "source_errors": _list_text_values(raw_data.get("source_errors")),
+        "degradation": _list_text_values(raw_data.get("degradation")),
+        "selected_candidates": selected,
+        "codes": codes,
+    }
+
+
 def resolve_auto_screen_analysis_targets(
     config: Config,
     *,
     strategy: str,
     market: str = "cn",
     max_results: int = 5,
+    etf_max_results: int = 0,
+    etf_strategy: str = "etf_candidate_prefilter",
     selection_seed: str = "",
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> Dict[str, Any]:
@@ -1784,59 +1883,51 @@ def resolve_auto_screen_analysis_targets(
     _ensure_screening_available_for_use()
     _ensure_supported_market(market)
     _ensure_supported_strategy(strategy)
-    if max_results <= 0:
-        raise ValueError("AUTO_SCREEN max_results must be positive")
+    if not 1 <= int(max_results) <= 10:
+        raise ValueError("AUTO_SCREEN stock max_results must be between 1 and 10")
+    if not 0 <= int(etf_max_results) <= 10:
+        raise ValueError("AUTO_SCREEN ETF max_results must be between 0 and 10")
+    if etf_max_results:
+        _ensure_supported_strategy(etf_strategy)
 
-    raw = _call_screening_screen(
-        strategy,
-        market,
-        max_results,
+    stock_bucket = _resolve_auto_screen_bucket(
         config,
+        strategy=strategy,
+        market=market,
+        max_results=int(max_results),
+        asset_type="stock",
         selection_seed=selection_seed,
         progress_callback=progress_callback,
-        use_llm=False,
-        post_analyzers=["scorecard"],
     )
-    raw_data = _remove_non_finite_json_values(_to_plain(raw))
-    if not isinstance(raw_data, dict):
-        raw_data = {"candidates": raw_data}
-
-    ranking_mode = _env_text(raw_data.get("ranking_mode") or "factor").lower()
-    post_analyzer_names = [
-        _env_text(name).lower()
-        for name in (raw_data.get("post_analyzers") or ["scorecard"])
-        if _env_text(name)
-    ]
-    if bool(raw_data.get("llm_ranked")) or ranking_mode == "llm":
-        raise RuntimeError("AUTO_SCREEN deterministic boundary violated: LLM ranking executed")
-    if post_analyzer_names != ["scorecard"] or bool(raw_data.get("deep_analysis_requested")):
-        raise RuntimeError(
-            "AUTO_SCREEN deterministic boundary violated: remote or unexpected post-analysis executed"
+    etf_bucket = (
+        _resolve_auto_screen_bucket(
+            config,
+            strategy=etf_strategy,
+            market=market,
+            max_results=int(etf_max_results),
+            asset_type="etf",
+            selection_seed=selection_seed,
+            progress_callback=progress_callback,
         )
-
-    normalized_candidates = _normalize_candidates(raw_data)
-    selected: List[Dict[str, Any]] = []
-    stock_codes: List[str] = []
-    seen_codes = set()
-    for candidate in normalized_candidates[:max_results]:
-        code = _env_text(candidate.get("code")).upper()
-        if not code or code in seen_codes:
-            continue
-        seen_codes.add(code)
-        stock_codes.append(code)
-        selected.append(
-            {
-                "rank": candidate.get("rank"),
-                "code": code,
-                "name": candidate.get("name") or "",
-                "score": candidate.get("score"),
-                "screen_score": candidate.get("screen_score"),
-                "reason": candidate.get("reason") or "",
-                "risk_level": candidate.get("risk_level") or "",
-                "risk_flags": list(candidate.get("risk_flags") or []),
-                "industry": candidate.get("industry") or "",
-            }
-        )
+        if etf_max_results
+        else {
+            "asset_type": "etf",
+            "strategy": etf_strategy,
+            "strategy_version": "",
+            "market": market,
+            "selected_count": 0,
+            "candidate_count": 0,
+            "selected_candidates": [],
+            "codes": [],
+            "source_errors": [],
+            "degradation": [],
+        }
+    )
+    stock_codes = list(stock_bucket.get("codes") or [])
+    etf_codes = list(etf_bucket.get("codes") or [])
+    selected = list(stock_bucket.get("selected_candidates") or []) + list(
+        etf_bucket.get("selected_candidates") or []
+    )
 
     engine_status = _call_screening_status()
     provenance = {
@@ -1845,21 +1936,32 @@ def resolve_auto_screen_analysis_targets(
         "engine_version": engine_status.get("version") or SCREENING_VERSION,
         "reference_project": engine_status.get("reference_project") or REFERENCE_PROJECT,
         "reference_revision": engine_status.get("reference_revision") or REFERENCE_REVISION,
-        "strategy": raw_data.get("strategy") or strategy,
-        "strategy_version": raw_data.get("strategy_version") or "",
-        "market": raw_data.get("market") or market,
-        "run_id": raw_data.get("run_id") or "",
-        "snapshot_count": raw_data.get("snapshot_count"),
-        "snapshot_source": raw_data.get("snapshot_source") or "",
-        "after_filter_count": raw_data.get("after_filter_count"),
-        "ranking_mode": ranking_mode,
+        "strategy": stock_bucket.get("strategy") or strategy,
+        "strategy_version": stock_bucket.get("strategy_version") or "",
+        "etf_strategy": etf_bucket.get("strategy") or etf_strategy,
+        "etf_strategy_version": etf_bucket.get("strategy_version") or "",
+        "market": stock_bucket.get("market") or market,
+        "run_id": stock_bucket.get("run_id") or "",
+        "etf_run_id": etf_bucket.get("run_id") or "",
+        "snapshot_count": stock_bucket.get("snapshot_count"),
+        "snapshot_source": stock_bucket.get("snapshot_source") or "",
+        "etf_snapshot_count": etf_bucket.get("snapshot_count"),
+        "etf_snapshot_source": etf_bucket.get("snapshot_source") or "",
+        "after_filter_count": stock_bucket.get("after_filter_count"),
+        "etf_after_filter_count": etf_bucket.get("after_filter_count"),
+        "ranking_mode": stock_bucket.get("ranking_mode") or "factor",
         "llm_ranked": False,
-        "post_analyzers": post_analyzer_names,
+        "post_analyzers": stock_bucket.get("post_analyzers") or ["scorecard"],
         "deep_analysis_requested": False,
-        "candidate_count": len(normalized_candidates),
-        "selected_count": len(stock_codes),
-        "source_errors": _list_text_values(raw_data.get("source_errors")),
-        "degradation": _list_text_values(raw_data.get("degradation")),
+        "candidate_count": stock_bucket.get("candidate_count"),
+        "etf_candidate_count": etf_bucket.get("candidate_count"),
+        "selected_count": len(stock_codes) + len(etf_codes),
+        "stock_selected_count": len(stock_codes),
+        "etf_selected_count": len(etf_codes),
+        "source_errors": list(stock_bucket.get("source_errors") or []),
+        "etf_source_errors": list(etf_bucket.get("source_errors") or []),
+        "degradation": list(stock_bucket.get("degradation") or []),
+        "etf_degradation": list(etf_bucket.get("degradation") or []),
         "selected_candidates": selected,
         "production_boundary": {
             "llm_ranking": False,
@@ -1870,6 +1972,8 @@ def resolve_auto_screen_analysis_targets(
     }
     return {
         "stock_codes": stock_codes,
+        "etf_codes": etf_codes,
+        "all_codes": stock_codes + etf_codes,
         "provenance": provenance,
     }
 

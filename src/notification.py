@@ -1580,6 +1580,126 @@ class NotificationService(
             signal_tag,
         )
 
+    @staticmethod
+    def _research_delivery(result: AnalysisResult) -> Dict[str, Any]:
+        dashboard = getattr(result, "dashboard", None)
+        if not isinstance(dashboard, dict):
+            return {}
+        delivery = dashboard.get("research_delivery")
+        return delivery if isinstance(delivery, dict) else {}
+
+    @staticmethod
+    def _research_conclusion(result: AnalysisResult) -> str:
+        dashboard = getattr(result, "dashboard", None)
+        dashboard = dashboard if isinstance(dashboard, dict) else {}
+        factor = dashboard.get("factor_decision")
+        factor = factor if isinstance(factor, dict) else {}
+        brief = factor.get("investor_brief")
+        if isinstance(brief, dict):
+            conclusion = str(brief.get("one_line_conclusion") or "").strip()
+            if conclusion:
+                return conclusion
+        canonical = factor.get("canonical_decision")
+        if isinstance(canonical, dict):
+            public_action = str(canonical.get("public_action") or "").strip()
+            if public_action:
+                return public_action
+        core = dashboard.get("core_conclusion")
+        if isinstance(core, dict):
+            conclusion = str(core.get("one_sentence") or "").strip()
+            if conclusion:
+                return conclusion
+        return str(getattr(result, "analysis_summary", "") or "").strip()
+
+    def _research_product_projection(
+        self,
+        results: List[AnalysisResult],
+        report_language: str,
+    ) -> tuple[str, List[AnalysisResult]]:
+        """Render product groups without creating a second fact authority."""
+        if report_language != "zh" or not results:
+            return "", list(results)
+
+        deliveries = [self._research_delivery(result) for result in results]
+        envelopes = {
+            str(item.get("delivery_envelope") or "")
+            for item in deliveries
+            if item
+        }
+        sources = {
+            str(item.get("selection_source") or "")
+            for item in deliveries
+            if item
+        }
+        if sources == {"AUTO_SCREEN"}:
+            groups = (
+                ("AUTO_ETF_FOCUS", "ETF重点 Top 3"),
+                ("AUTO_STOCK_FOCUS", "股票重点 Top 3"),
+                ("AUTO_ETF_REMAINING", "ETF其余候选 4–10"),
+                ("AUTO_STOCK_REMAINING", "股票其余候选 4–10"),
+            )
+            lines = ["## 🔎 晚间自动发现", ""]
+            focus_results: List[AnalysisResult] = []
+            rendered_group = False
+            for group_key, label in groups:
+                grouped = [
+                    result
+                    for result in results
+                    if self._research_delivery(result).get("product_group") == group_key
+                ]
+                grouped.sort(
+                    key=lambda result: (
+                        self._research_delivery(result).get("group_rank") or 999,
+                        -float(getattr(result, "sentiment_score", 0) or 0),
+                    )
+                )
+                if not grouped:
+                    continue
+                rendered_group = True
+                lines.extend([f"### {label}", ""])
+                for result in grouped:
+                    delivery = self._research_delivery(result)
+                    rank = delivery.get("group_rank")
+                    rank_text = f"{rank}. " if isinstance(rank, int) else ""
+                    name = self._get_display_name(result, report_language)
+                    conclusion = self._research_conclusion(result)
+                    suffix = f"｜{conclusion}" if conclusion else ""
+                    lines.append(f"- {rank_text}**{name}（{result.code}）**{suffix}")
+                lines.append("")
+                if group_key.endswith("_FOCUS"):
+                    focus_results.extend(grouped)
+            if rendered_group:
+                return "\n".join(lines).strip(), focus_results or list(results)
+
+        if "ASSET_RESEARCH_BRIEF_WATCHLIST" in envelopes:
+            lines = [
+                "## ⭐ 我的自选研究",
+                "",
+                "本封仅列本轮发生材料变化的标的。",
+                "",
+            ]
+            for group_key, label in (
+                ("WATCHLIST_ETF", "ETF"),
+                ("WATCHLIST_STOCK", "股票"),
+            ):
+                grouped = [
+                    result
+                    for result in results
+                    if self._research_delivery(result).get("product_group") == group_key
+                ]
+                if not grouped:
+                    continue
+                lines.extend([f"### {label}", ""])
+                for result in grouped:
+                    name = self._get_display_name(result, report_language)
+                    conclusion = self._research_conclusion(result)
+                    suffix = f"｜{conclusion}" if conclusion else ""
+                    lines.append(f"- **{name}（{result.code}）**{suffix}")
+                lines.append("")
+            return "\n".join(lines).strip(), list(results)
+
+        return "", list(results)
+
     def generate_dashboard_report(
         self,
         results: List[AnalysisResult],
@@ -1600,6 +1720,10 @@ class NotificationService(
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        product_overview, _ = self._research_product_projection(
+            results,
+            report_language,
+        )
 
         def _nlabel(en: str, zh: str, ko: str) -> str:
             if report_language == "en":
@@ -1627,7 +1751,7 @@ class NotificationService(
                 },
             )
             if out:
-                return out
+                return f"{product_overview}\n\n{out}" if product_overview else out
 
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
@@ -1644,6 +1768,8 @@ class NotificationService(
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
         ]
         self._append_market_status_line(report_lines, results, report_language)
+        if product_overview:
+            report_lines.extend(["", product_overview, ""])
 
         # === 新增：分析结果摘要 (Issue #112) ===
         if results:
@@ -2233,22 +2359,26 @@ class NotificationService(
             report_date = datetime.now().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        product_overview, detail_results = self._research_product_projection(
+            results,
+            report_language,
+        )
         config = get_config()
-        if getattr(config, 'report_renderer_enabled', False) and results:
+        if getattr(config, 'report_renderer_enabled', False) and detail_results:
             from src.services.report_renderer import render
             out = render(
                 platform='brief',
-                results=results,
+                results=detail_results,
                 report_date=report_date,
                 summary_only=False,
                 extra_context={"report_language": report_language},
             )
             if out:
-                return out
+                return f"{product_overview}\n\n{out}" if product_overview else out
         # Fallback: brief summary from dashboard report
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
-        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        sorted_results = sorted(detail_results, key=lambda x: x.sentiment_score, reverse=True)
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         lines = [
             f"# {report_date} {labels['brief_title']}",
@@ -2256,6 +2386,8 @@ class NotificationService(
             f"> {len(results)} {labels['stock_unit_compact']} | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
         ]
         self._append_market_status_line(lines, results, report_language)
+        if product_overview:
+            lines.extend(["", product_overview, ""])
         for r in sorted_results:
             signal_text, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)

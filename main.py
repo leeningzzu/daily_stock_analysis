@@ -403,13 +403,27 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--auto-screen-max-results',
         type=int,
-        choices=(1, 2, 3),
+        choices=tuple(range(1, 11)),
         default=1,
-        help='AUTO_SCREEN 最终进入深析的候选数（1-3，默认 1）'
+        help='AUTO_SCREEN 股票最终进入深析的候选上限（1-10，默认 1）'
+    )
+
+    parser.add_argument(
+        '--auto-screen-etf-max-results',
+        type=int,
+        choices=tuple(range(0, 11)),
+        default=0,
+        help='AUTO_SCREEN ETF 最终进入深析的候选上限（0-10，默认 0）'
     )
 
     parser.add_argument(
         '--auto-screen-bounded-live',
+        action='store_true',
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        '--watchlist-conditional',
         action='store_true',
         help=argparse.SUPPRESS,
     )
@@ -945,7 +959,14 @@ def run_full_analysis(
         market_context_generated_during_stock = False
         research_selection_context = getattr(args, "research_selection_context", None)
         if not isinstance(research_selection_context, dict):
-            research_selection_context = build_specified_codes_selection_context(query_source="cli")
+            research_selection_context = build_specified_codes_selection_context(
+                query_source="cli",
+                delivery_envelope=(
+                    "ASSET_RESEARCH_BRIEF_WATCHLIST"
+                    if bool(getattr(args, "watchlist_conditional", False))
+                    else None
+                ),
+            )
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=args.workers,
@@ -1221,6 +1242,7 @@ def _run_auto_screen_shared_analysis(
     strategy: str,
     market: str = "cn",
     max_results: int = 5,
+    etf_max_results: int = 0,
     selection_seed: str = "",
     raise_errors: bool = False,
     bounded_live: bool = False,
@@ -1228,20 +1250,26 @@ def _run_auto_screen_shared_analysis(
     """Feed deterministic AUTO_SCREEN candidates into the existing analysis shell."""
     from src.services.screening_service import resolve_auto_screen_analysis_targets
 
-    if bounded_live and max_results != 1:
-        raise P0BoundedTrialError("AUTO_SCREEN bounded live requires max_results=1")
+    if bounded_live and (max_results != 1 or etf_max_results != 0):
+        raise P0BoundedTrialError(
+            "AUTO_SCREEN bounded live requires max_results=1 and etf_max_results=0"
+        )
 
-    resolution = resolve_auto_screen_analysis_targets(
-        config,
-        strategy=strategy,
-        market=market,
-        max_results=max_results,
-        selection_seed=selection_seed,
-    )
+    resolution_kwargs = {
+        "strategy": strategy,
+        "market": market,
+        "max_results": max_results,
+        "selection_seed": selection_seed,
+    }
+    if etf_max_results:
+        resolution_kwargs["etf_max_results"] = etf_max_results
+    resolution = resolve_auto_screen_analysis_targets(config, **resolution_kwargs)
     stock_codes = list(resolution.get("stock_codes") or [])
-    if not stock_codes:
+    etf_codes = list(resolution.get("etf_codes") or [])
+    analysis_codes = stock_codes + etf_codes
+    if not analysis_codes:
         logger.info(
-            "AUTO_SCREEN 未产生候选，跳过个股深析: strategy=%s market=%s",
+            "AUTO_SCREEN 未产生股票或ETF候选，跳过深析: strategy=%s market=%s",
             strategy,
             market,
         )
@@ -1253,7 +1281,10 @@ def _run_auto_screen_shared_analysis(
     if bounded_live:
         if len(stock_codes) != 1:
             raise P0BoundedTrialError("AUTO_SCREEN bounded live requires exactly one screened candidate")
+        if etf_codes:
+            raise P0BoundedTrialError("AUTO_SCREEN bounded live rejects ETF candidates")
         stock_codes = validate_p0_stock_codes(",".join(stock_codes))
+        analysis_codes = list(stock_codes)
         bounded_model = str(os.getenv("AUTO_SCREEN_BOUNDED_MODEL", "") or "").strip()
         if not bounded_model:
             raise P0BoundedTrialError("AUTO_SCREEN bounded live requires an exact model identity")
@@ -1312,15 +1343,16 @@ def _run_auto_screen_shared_analysis(
 
 
     logger.info(
-        "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s codes=%s",
+        "AUTO_SCREEN 候选进入既有 run_full_analysis 深析链: strategy=%s run_id=%s stocks=%s etfs=%s",
         provenance.get("strategy") or strategy,
         provenance.get("run_id") or "-",
-        ",".join(stock_codes),
+        ",".join(stock_codes) or "-",
+        ",".join(etf_codes) or "-",
     )
     succeeded = run_full_analysis(
         config,
         analysis_args,
-        stock_codes,
+        analysis_codes,
         raise_errors=raise_errors,
     )
     return succeeded, resolution
@@ -1634,11 +1666,14 @@ def main() -> int:
         logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires --auto-screen")
         return 2
     if auto_screen:
+        github_event = str(os.getenv("GITHUB_EVENT_NAME") or "")
         if (
             os.getenv("GITHUB_ACTIONS") != "true"
-            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or github_event not in {"workflow_dispatch", "schedule"}
         ):
-            logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen is workflow_dispatch-only")
+            logger.error(
+                "AUTO_SCREEN_BOUNDARY_VIOLATION: auto-screen requires GitHub workflow_dispatch or schedule"
+            )
             return 2
         if (
             p0_bounded_trial
@@ -1652,8 +1687,14 @@ def main() -> int:
             logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: incompatible CLI arguments")
             return 2
         if auto_screen_bounded_live:
-            if getattr(args, "auto_screen_max_results", 1) != 1:
-                logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires max_results=1")
+            if (
+                github_event != "workflow_dispatch"
+                or getattr(args, "auto_screen_max_results", 1) != 1
+                or getattr(args, "auto_screen_etf_max_results", 0) != 0
+            ):
+                logger.error(
+                    "AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires workflow_dispatch, stock max=1, ETF max=0"
+                )
                 return 2
             if getattr(args, "no_notify", False):
                 logger.error("AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires aggregate Email notification")
@@ -1665,8 +1706,10 @@ def main() -> int:
         config.single_stock_notify = False
         args.no_market_review = True
         logger.info(
-            "AUTO_SCREEN 手动入口已启用: strategy=momentum_quality max_results=%s",
+            "AUTO_SCREEN 入口已启用: strategy=momentum_quality stock_max=%s etf_max=%s event=%s",
             getattr(args, "auto_screen_max_results", 1),
+            getattr(args, "auto_screen_etf_max_results", 0),
+            github_event,
         )
     if p0_bounded_trial:
         if (
@@ -1860,6 +1903,7 @@ def main() -> int:
                 strategy="momentum_quality",
                 market="cn",
                 max_results=getattr(args, "auto_screen_max_results", 1),
+                etf_max_results=getattr(args, "auto_screen_etf_max_results", 0),
                 raise_errors=True,
                 bounded_live=auto_screen_bounded_live,
             )

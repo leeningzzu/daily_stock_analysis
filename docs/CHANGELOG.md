@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 19:00 资产研究进入 Phase-B 分组与条件投递：在同一 GitHub Actions / StockAnalysisPipeline 中将 AUTO_SCREEN 扩展为股票≤10与A股ETF≤10的独立候选上限，各自前3名作为重点、4–10名紧凑展示且允许0候选；ETF复用现有AkShare行情owner与AlphaSift-derived筛选框架的专属流动性/趋势配置，不套用个股PE/PB/市值过滤。SPECIFIED_CODES/自选保持独立额度，并以AnalysisHistory中的canonical decision/evidence摘要判断材料变化后单独投递WATCHLIST；保存报告、Email、Telegram继续消费同一AnalysisResult事实，P0 bounded-live仍锁定workflow_dispatch、1只股票、0只ETF。
+
 - [改进] PredictionOutcome research execution realism 增加 source-neutral `execution-identity-v1`：以 fail-closed XSHG exact-session 解析替代“后续三条日线”假设，calendar 未证明时阻断、已完成 session 缺 bar/执行证据 UNKNOWN/entry 或 exit hard-nonfill 时保持 `UNLABELABLE`，并以 nullable execution identity hash/json 保存可修正的后验执行证据；engine 升级为 v3，旧 outcome 不回写，provider 权利与 durable bytes 继续独立准入。
 - [改进] PIT research cost identity 升级为 v2：在既有 PredictionOutcome/BacktestEngine/PITDataset 路线上加入交易所与规则有效期、结构化佣金口径、冻结 reference notional 和逐边绝对最低佣金，历史区间或资产身份不匹配时 fail-closed；PredictionOutcome engine 升级为 v2 且不改写旧 outcome，同时新增 `EXECUTION_REALISM_NOT_APPROVED` 训练门，将涨跌停/停牌/next-open 等真实成交约束继续留在独立 pre-training milestone。
 - [新功能] GitHub Actions 新增仅人工 `stocks-only` 可激活的 P0 有界指定股票验收：独立接收 1–2 个沪深普通 A 股，不读取或覆盖 `STOCK_LIST`，禁用搜索、Agent、重试和模型回退，将主模型请求限制为每轮最多 2 次，并在 deterministic WAIT/PASS canonical action 一致性通过后只发送一封中文 simple 汇总 Email。

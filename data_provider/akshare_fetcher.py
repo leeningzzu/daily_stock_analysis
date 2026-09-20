@@ -1370,6 +1370,61 @@ class AkshareFetcher(BaseFetcher):
             circuit_breaker.record_failure(source_key, failure_message)
             return None
     
+    def get_etf_realtime_snapshot(self) -> pd.DataFrame:
+        """Return the cached full A-share ETF realtime snapshot.
+
+        This is the single owner of ak.fund_etf_spot_em() access so screening
+        can reuse the same rate-limit, retry, circuit-breaker and cache
+        semantics instead of introducing a second provider path.
+        """
+        import akshare as ak
+
+        circuit_breaker = get_realtime_circuit_breaker()
+        source_key = "akshare_etf"
+        current_time = time.time()
+        if (
+            _etf_realtime_cache['data'] is not None
+            and current_time - _etf_realtime_cache['timestamp'] < _etf_realtime_cache['ttl']
+        ):
+            cached = _etf_realtime_cache['data']
+            return cached.copy() if isinstance(cached, pd.DataFrame) else pd.DataFrame()
+
+        last_error: Optional[Exception] = None
+        df: Optional[pd.DataFrame] = None
+        for attempt in range(1, 3):
+            try:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+                logger.info(
+                    "[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt %s/2)",
+                    attempt,
+                )
+                api_start = time.time()
+                df = ak.fund_etf_spot_em()
+                logger.info(
+                    "[API返回] ak.fund_etf_spot_em 成功: 返回 %s 只ETF, 耗时 %.2fs",
+                    len(df),
+                    time.time() - api_start,
+                )
+                circuit_breaker.record_success(source_key)
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.info(
+                    "[API错误] ak.fund_etf_spot_em 获取失败 (attempt %s/2): %s",
+                    attempt,
+                    exc,
+                )
+                time.sleep(min(2 ** attempt, 5))
+
+        if df is None:
+            logger.info("[API错误] ak.fund_etf_spot_em 最终失败: %s", last_error)
+            circuit_breaker.record_failure(source_key, str(last_error))
+            df = pd.DataFrame()
+        _etf_realtime_cache['data'] = df
+        _etf_realtime_cache['timestamp'] = current_time
+        return df.copy()
+
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取 ETF 基金实时行情数据
@@ -1383,47 +1438,11 @@ class AkshareFetcher(BaseFetcher):
         Returns:
             UnifiedRealtimeQuote 对象，获取失败返回 None
         """
-        import akshare as ak
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "akshare_etf"
         
         try:
-            # 检查缓存
-            current_time = time.time()
-            if (_etf_realtime_cache['data'] is not None and 
-                current_time - _etf_realtime_cache['timestamp'] < _etf_realtime_cache['ttl']):
-                df = _etf_realtime_cache['data']
-                logger.debug(f"[缓存命中] 使用缓存的ETF实时行情数据")
-            else:
-                last_error: Optional[Exception] = None
-                df = None
-                for attempt in range(1, 3):
-                    try:
-                        # 防封禁策略
-                        self._set_random_user_agent()
-                        self._enforce_rate_limit()
-
-                        logger.info(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/2)")
-                        import time as _time
-                        api_start = _time.time()
-
-                        df = ak.fund_etf_spot_em()
-
-                        api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.fund_etf_spot_em 成功: 返回 {len(df)} 只ETF, 耗时 {api_elapsed:.2f}s")
-                        circuit_breaker.record_success(source_key)
-                        break
-                    except Exception as e:
-                        last_error = e
-                        logger.info(f"[API错误] ak.fund_etf_spot_em 获取失败 (attempt {attempt}/2): {e}")
-                        time.sleep(min(2 ** attempt, 5))
-
-                if df is None:
-                    logger.info(f"[API错误] ak.fund_etf_spot_em 最终失败: {last_error}")
-                    circuit_breaker.record_failure(source_key, str(last_error))
-                    df = pd.DataFrame()
-                _etf_realtime_cache['data'] = df
-                _etf_realtime_cache['timestamp'] = current_time
+            df = self.get_etf_realtime_snapshot()
 
             if df is None or df.empty:
                 logger.info(f"[实时行情] ETF实时行情数据为空，跳过 {stock_code}")

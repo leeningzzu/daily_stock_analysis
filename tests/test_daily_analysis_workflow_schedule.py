@@ -207,14 +207,19 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.text,
         )
 
-    def test_auto_screen_entry_is_manual_only_and_bounded(self):
+    def test_auto_screen_product_and_bounded_manual_entry(self):
         self.assertIn("- auto-screen", self.text)
         self.assertIn("auto_screen_max_results:", self.text)
+        self.assertIn("auto_screen_etf_max_results:", self.text)
         self.assertIn("default: '1'", self.text)
-        self.assertIn("- '2'", self.text)
-        self.assertIn("- '3'", self.text)
+        self.assertIn("default: '0'", self.text)
+        self.assertIn("- '10'", self.text)
         self.assertIn(
             "AUTO_SCREEN_MAX_RESULTS: ${{ github.event.inputs.auto_screen_max_results || '1' }}",
+            self.text,
+        )
+        self.assertIn(
+            "AUTO_SCREEN_ETF_MAX_RESULTS: ${{ github.event.inputs.auto_screen_etf_max_results || '0' }}",
             self.text,
         )
         self.assertIn(
@@ -232,7 +237,7 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
             self.text,
         )
         self.assertIn(
-            'AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires auto_screen_max_results=1',
+            'AUTO_SCREEN_BOUNDARY_VIOLATION: bounded live requires stock max=1 and ETF max=0',
             self.text,
         )
         self.assertIn(
@@ -241,9 +246,21 @@ class TestDailyAnalysisStrictSchedule(unittest.TestCase):
         )
         self.assertIn(
             'python main.py --auto-screen --auto-screen-max-results "$AUTO_SCREEN_MAX_RESULTS" '
+            '--auto-screen-etf-max-results "$AUTO_SCREEN_ETF_MAX_RESULTS" '
             '$AUTO_SCREEN_BOUNDED_LIVE_ARG --no-market-review $FORCE_RUN_ARG',
             self.text,
         )
+        self.assertIn(
+            "python main.py --auto-screen --auto-screen-max-results 10 "
+            "--auto-screen-etf-max-results 10 --no-market-review $FORCE_RUN_ARG",
+            self.text,
+        )
+        self.assertIn(
+            "python main.py --watchlist-conditional --no-market-review $FORCE_RUN_ARG",
+            self.text,
+        )
+        self.assertIn('WATCHLIST_HAS_CODES="false"', self.text)
+        self.assertIn('WATCHLIST_HAS_CODES="true"', self.text)
         self.assertIn("P0 model-effect boundary；行情数据源 fallback 仍可用", self.text)
         self.assertIn("AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON=", self.text)
         self.assertIn("GITHUB_STEP_SUMMARY", self.text)

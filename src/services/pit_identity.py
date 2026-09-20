@@ -169,12 +169,14 @@ def build_specified_codes_selection_context(
     *,
     raw_selection_source: Any = None,
     query_source: Any = None,
+    delivery_envelope: Any = None,
 ) -> Dict[str, Any]:
     return normalize_research_selection_context(
         {
             "selection_source": "SPECIFIED_CODES",
             "request_origin": str(raw_selection_source or "").strip() or None,
             "query_source": str(query_source or "").strip() or None,
+            "delivery_envelope": str(delivery_envelope or "").strip() or None,
         }
     )
 
@@ -193,6 +195,14 @@ def build_auto_screen_selection_context(provenance: Any) -> Dict[str, Any]:
             "after_filter_count",
             "ranking_mode",
             "selected_count",
+            "stock_selected_count",
+            "etf_selected_count",
+            "etf_strategy",
+            "etf_strategy_version",
+            "etf_run_id",
+            "etf_snapshot_count",
+            "etf_snapshot_source",
+            "etf_after_filter_count",
         )
         if source.get(key) not in (None, "", [], {})
     }
@@ -203,14 +213,28 @@ def build_auto_screen_selection_context(provenance: Any) -> Dict[str, Any]:
         selected.append(
             {
                 key: candidate.get(key)
-                for key in ("rank", "code", "score", "screen_score", "risk_level", "industry")
+                for key in (
+                    "rank",
+                    "group_rank",
+                    "product_group",
+                    "asset_type",
+                    "code",
+                    "score",
+                    "screen_score",
+                    "risk_level",
+                    "industry",
+                )
                 if candidate.get(key) not in (None, "", [], {})
             }
         )
     if selected:
         screening["selected_candidates"] = selected
     return normalize_research_selection_context(
-        {"selection_source": "AUTO_SCREEN", "screening": screening}
+        {
+            "selection_source": "AUTO_SCREEN",
+            "delivery_envelope": "ASSET_RESEARCH_BRIEF_AUTO",
+            "screening": screening,
+        }
     )
 
 
@@ -223,7 +247,7 @@ def normalize_research_selection_context(value: Any) -> Dict[str, Any]:
         "schema_version": RESEARCH_SELECTION_CONTEXT_VERSION,
         "selection_source": route,
     }
-    for key in ("request_origin", "query_source", "universe_snapshot_id"):
+    for key in ("request_origin", "query_source", "universe_snapshot_id", "delivery_envelope"):
         text = str(payload.get(key) or "").strip()
         if text:
             normalized[key] = text

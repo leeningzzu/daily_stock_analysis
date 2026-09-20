@@ -686,6 +686,8 @@ schedule:
 
 The current GitHub Actions schedule also passes through the strict CN trading-day gate, so weekends and official China market holidays do not enter analysis.
 
+The 19:00 asset-research schedule now uses two projections inside the same workflow. It first runs deterministic `AUTO_SCREEN` with independent caps of at most 10 stocks and 10 A-share ETFs; the first three in each asset class are the first-screen focus and positions 4–10 are compact secondary candidates. Either class may lawfully return zero candidates and is never force-filled. The workflow then runs the independent WATCHLIST / SPECIFIED_CODES deep-analysis route only when a real `STOCK_LIST` is configured. Watchlist names do not consume AUTO capacity and receive a separate notification only when canonical decision/evidence facts materially differ from the previous comparable watchlist history. The normal AUTO audit keeps the standard daily-report filename, while the watchlist audit uses a separate `*_watchlist.md` file. Email and Telegram still project facts from the same `AnalysisResult → factor_decision → investor_brief` authority.
+
 Common time reference:
 
 | Beijing Time | UTC cron expression |
@@ -696,11 +698,11 @@ Common time reference:
 | 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
-#### Bounded manual AUTO_SCREEN entry
+#### AUTO_SCREEN and bounded manual acceptance
 
-`mode=auto-screen` is manual `workflow_dispatch` only. Set `auto_screen_max_results` to `1`, `2`, or `3` (default `1`). Screening only decides which candidates enter deep analysis: LLM ranking is disabled on this path, the bounded candidates are forwarded to the existing `run_full_analysis` / `StockAnalysisPipeline` chain, and the existing canonical factor/decision owner remains the final public-action authority. Screening score is not a win rate or calibrated probability. This manual acceptance entry does not promote the existing scheduled run to AUTO_SCREEN.
+For ordinary manual `mode=auto-screen`, `auto_screen_max_results` accepts 1–10 stocks and `auto_screen_etf_max_results` accepts 0–10 ETFs. The caps are independent. Screening remains deterministic and only selects assets for the existing `run_full_analysis` / `StockAnalysisPipeline`; ranking does not become a win rate, calibrated probability, or final action. The ETF route reuses the existing DSA ETF market-data owner and the same AlphaSift-derived screening pipeline with an ETF-specific profile rather than stock PE/PB/market-cap quality rules. Final ETF actions remain fail-closed under the shared ETF canonical decision.
 
-A one-off real acceptance run may explicitly set `auto_screen_bounded_live=true`, but only with `auto_screen_max_results=1`, and `auto_screen_bounded_model` must provide the exact model ID approved for that run. Screening remains deterministic with `use_llm=False`; once the single candidate is selected, deep analysis temporarily reuses the existing P0 process-local boundary: one worker, no Agent/search/Router, zero model fallback/retry, parameter recovery, or integrity-completion retry, and direct LiteLLM with `num_retries=0`. Existing deterministic market-data provider retry/fallback may still occur to obtain market data and is outside the model-effect boundary. This bounded-live acceptance forcibly suppresses outbound notification, reuses existing `selected_candidates` plus the same canonical `AnalysisResult` to emit a sanitized `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON` into the logs and GitHub Step Summary, and still retains the full audit report/Artifact. Email/Telegram delivery has already been validated independently and is not repeated on every AUTO_SCREEN acceptance run. The switch and model input are one-shot `workflow_dispatch` values, are not persisted, and do not change ordinary AUTO_SCREEN, the existing 19:00 schedule, or its production notifications.
+A one-off real acceptance run may explicitly set `auto_screen_bounded_live=true`, but it remains `workflow_dispatch` only and requires `auto_screen_max_results=1`, `auto_screen_etf_max_results=0`, and an exact `auto_screen_bounded_model`. It continues to reuse the P0 process-local boundary: one worker, no Agent/search/Router, zero model fallback/retry, parameter recovery, or integrity-completion retry; outbound notification is forcibly suppressed and a sanitized `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON` is emitted. Normal 19:00 AUTO support for 10+10 does not broaden this bounded-live acceptance authority.
 
 #### P0 bounded specified-stock acceptance
 

@@ -24,6 +24,16 @@ def test_specified_codes_keeps_ui_origin_separate_from_research_route() -> None:
     assert context["selection_context_hash"]
 
 
+def test_specified_codes_watchlist_envelope_is_identity_bound() -> None:
+    context = build_specified_codes_selection_context(
+        query_source="cli",
+        delivery_envelope="ASSET_RESEARCH_BRIEF_WATCHLIST",
+    )
+    assert context["selection_source"] == "SPECIFIED_CODES"
+    assert context["delivery_envelope"] == "ASSET_RESEARCH_BRIEF_WATCHLIST"
+    assert context["selection_context_hash"]
+
+
 def test_auto_screen_context_reuses_existing_provenance_without_universe_guess() -> None:
     context = build_auto_screen_selection_context(
         {
@@ -33,12 +43,25 @@ def test_auto_screen_context_reuses_existing_provenance_without_universe_guess()
             "run_id": "screen-1",
             "snapshot_count": 5206,
             "snapshot_source": "em_datacenter",
-            "selected_candidates": [{"rank": 1, "code": "600519", "score": 77.2}],
+            "selected_candidates": [
+                {
+                    "rank": 1,
+                    "group_rank": 1,
+                    "product_group": "AUTO_STOCK_FOCUS",
+                    "asset_type": "stock",
+                    "code": "600519",
+                    "score": 77.2,
+                }
+            ],
         }
     )
     assert context["selection_source"] == "AUTO_SCREEN"
+    assert context["delivery_envelope"] == "ASSET_RESEARCH_BRIEF_AUTO"
     assert context["screening"]["run_id"] == "screen-1"
     assert context["screening"]["snapshot_source"] == "em_datacenter"
+    candidate = context["screening"]["selected_candidates"][0]
+    assert candidate["product_group"] == "AUTO_STOCK_FOCUS"
+    assert candidate["asset_type"] == "stock"
     assert "universe_snapshot_id" not in context
 
 

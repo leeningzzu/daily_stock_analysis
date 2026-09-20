@@ -1,3 +1,5 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
 # ETF-specific AUTO_SCREEN profile.
 # Reuses the AlphaSift-derived Screening pipeline without stock PE/PB/market-cap semantics.
 name: etf_candidate_prefilter

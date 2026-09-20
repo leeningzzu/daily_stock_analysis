@@ -50,6 +50,22 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 如果 `score >= 60` 但最终 `action` 是 `hold/watch`，或 `score < 40` 但最终 `action` 仍是 `hold/watch`，必须有明确 guardrail 解释，例如 `dashboard.decision_stability.reason`、`dashboard.decision_score_calibration.guardrail_reason` 或 `metadata.guardrail_reason`。风控降级会保留 `raw_score`、`adjusted_score`、`raw_action`、`final_action` 和原因；没有明确原因的中性动作在 DecisionSignal 提取时会按 canonical score 对齐为 `buy/reduce/sell`。
 
+MUE V1 的 `market-sector-regime-v1` 不新增行情源、调度器或第二套决策引擎，而是复用现有 `MarketLightSnapshot` 与 `MarketStructureContext` 形成 factor-decision 内部确定性证据族。`MarketLight` 为 `red` 且 `data_quality=ok` 时可作为市场风险硬否决；`yellow`、partial red 与板块 `cooling` 仅形成谨慎/降级证据；`green` 或板块 `warming/accelerating` 只能确认/许可既有个股 setup，不能独立把 WAIT 升级为 BUY。缺失、partial、unsupported 必须保留相应 evidence state，不得补齐。
+
+MUE V1 的 `trend-relative-strength-v1` 把“绝对趋势”和“相对基准强弱”分开：绝对趋势继续复用 `StockTrendAnalyzer`，但 canonical factor 只消费至少 60 根 completed daily bars，不消费盘中 realtime 拼接的未完成日线或 MA60 的短历史 fallback；相对强弱首版对 A 股使用代码 `510300` 的沪深300ETF作为显式 `etf_proxy`，不得表述为沪深300指数原始历史。股票与 benchmark 的首次日线 warm-up 均取 120 个日历日但不增加请求次数；RS 以 benchmark 的 61 个 completed observations 定义 60-session 起止日期，并要求股票在完全相同的 start/end 日期有收盘价；warm-up、target date 或共享端点不足时保持 MISSING/UNKNOWN。RS 明确是 provider price-return proxy，不冒充 total-return 指数；Production READY 还要求股票起止端点 `data_source` 与 benchmark provider 一致，跨源只能 PARTIAL。正 RS 只能确认，负 RS 首版也不独立形成 hard veto，阈值与权重留给后续 outcome/PIT 校准。
+
+MUE V1 的 `supply-demand-volume-price-v1` 只使用 completed OHLCV，不把实时换手率或供应商“主力净流入”标签当成历史确定性真值。首版要求至少 21 根 completed bars，复用既有 5 日量比/量能状态，并补充 20 日相对量、最近 5 日对前 5 日量能变化、上涨/下跌方向成交量平衡与 CMF20；同一底层量能原语按 `relative_volume`、`directional_volume`、`close_location_flow` correlation group 管理，不能重复计票。数据窗口 `data_source` 只有一个明确来源时才能 READY，缺源或混源只到 PARTIAL。该证据族仅描述可观察的需求增强、供应压力、量能收缩或冲突，不宣称“主力吸筹/出货”；也不新增 hard veto，既有 `HEAVY_VOLUME_DOWN` 否决仍由 legacy completed-bar `volume_status` 唯一拥有。
+
+MUE V1 的 `cost-structure-v1` 将成本结构拆成两个不可互相冒充的证据层：现有 `ChipDistribution` 继续作为供应商估算的 current/recent snapshot，只有来源和日期与本轮 target date 可证明时才标 `READY_CURRENT_ONLY`，并明确不能进入历史 PIT replay；历史可重放层只复用 completed daily bars，以 20/60 个交易时段的 `Σ(HLC3×volume)/Σ(volume)` 形成 `BAR_DERIVED_REFERENCE_PRICE_NOT_HOLDER_COST`。该量价参考不是传统日内 VWAP、真实 Volume Profile 或实际持仓取得成本；source/warm-up/target-date/正成交量不足时 fail-closed。两层仅用 provider 自身 70%/90% 成本区形成 `CONVERGENT/DIVERGENT/SINGLE_SOURCE_ONLY/NOT_COMPARABLE`，不发明固定百分比阈值，不推断机构意图，也不独立升级 BUY 或增加 hard veto。AVWAP、POC/VAH/VAL、历史 provider-chip replay 与 intraday profile 留待对应 Pivot/Swing、event-known-at 和分钟/逐笔数据 owner 成熟后再进入。
+
+MUE V1 的 `price-structure-v1` 复用同一 completed daily history，不引入第二套行情或形态框架。首版使用对称的左右各 2 根 K 线确认局部 Pivot，并把视觉起点 `origin_time` 与最早可知的 `confirmed_at` 分开；目标日期裁剪保证后续数据不会把尚未确认的 Pivot 回填为历史已知事实。已确认 Pivot 压缩成可复用 Swing，再生成仍有效的最近支撑/压力以及 `UP_BREAKOUT / UP_BREAKOUT_RETEST_HOLD / FAILED_UP_BREAKOUT` 和对称的向下状态；所有事件只消费 completed close/high/low，不用 LLM 猜测，也不使用任意预测权重。数据源缺失/混源、目标 bar 缺失、warm-up 不足或非法 OHLC 均 fail-closed/降级。该证据族不新增 hard veto 或独立 BUY authority；杯柄、VCP、双底等更高阶几何仍由后续 Pattern/Trigger 基于同一 Pivot/Swing primitive 实现。
+
+MUE V1 的 `volatility-momentum-v1` 继续复用同一 completed daily history、`StockTrendAnalyzer` 的 MACD/RSI 公式和 `price-structure-v1` 的 confirmed Pivot/Swing，不安装第二套 TA 库。波动层记录 20 日年化实现波动率与 20 日 True Range 简单均值/现价比例；后者与筛选层历史 `atr_20_pct` 公式一致，但明确不是 Wilder/TA-Lib ATR。动量层增加 ROC20/ROC60，并把 MACD/RSI 当前状态作为同一结构化证据投影。背离只有在两个已确认同类 Pivot 上、以 Pivot `origin_time` 对齐当时因果可得的 MACD DIF/RSI12，并以第二 Pivot 的 `confirmed_at` 作为最早确认时间后才成立；同一 swing 上的 MACD/RSI 共用一个 correlation group，不能重复计票。首版还记录收益一阶自相关、5 日方差尺度比、绝对收益一阶自相关、偏度/超额峰度与 3σ 尾部事件数作为观察性过程诊断；这些值不执行显著性检验、不输出 A/B/C“世界”硬分类、不自动切换策略，也不独立升级 BUY 或新增 hard veto。ADF/OU 半衰期/GARCH/HMM 与跨周期重复诊断继续延后到相应研究/多周期 owner。
+
+MUE V1 的 `pattern-trigger-v1` 不再实现第二套 Pivot 或 breakout owner，而是只组合 `price-structure-v1` 已确认的 Pivot/Swing 与 completed-close breakout/retest/failed-breakout 事件。首版只支持 `CUP_BASE`（柄部 `NONE/FORMING/COMPLETE`）、采用 O'Neil bullish-continuation 语义的 `DOUBLE_BOTTOM_BASE`，以及 `CONTRACTION_BASE`（`VCP/FLAT_BASE/TIGHT_CONSOLIDATION`）；StockCharts prior-downtrend reversal double-bottom 明确延期，不能与 continuation base 混用。所有百分比、时长、收缩和量能门槛都是带 `algorithm_version/config_hash` 的 V1 候选参数，不是普适市场定律。几何状态为 `FORMING/READY/INVALIDATED`，组合生命周期为 `FORMING/CONFIRMED/FAILED`；其中 `CONFIRMED/FAILED` 必须引用 Price Structure 的同一 trigger pivot 事件，禁止重新计算突破。历史 replay 只接受 target-date completed prefix，要求所有 pivot `confirmed_at <= target_date`、source alignment 可证明、full-series 截断结果与显式 prefix 一致且未来 K 线不能回填旧状态。该证据族不推断机构意图、不新增 hard veto、不独立升级 BUY、不自动切换策略；现有 Agent `analyze_pattern` 与 AlphaSift-derived screening 特征仅作方法/候选特征复用，不直接成为 canonical truth。
+
+MUE V1 的 `multi-timeframe-structure-v1` 只在既有 completed daily history 上做确定性周/月 OHLCV 聚合，不新增行情源、数据库、第二 bar engine 或第二决策 owner。选定资产首次深析按需请求约 1100 个日历日的日线，以给 26 根 completed monthly bars 留出日历缓冲；这只是当前决策窗口，不是持久化行情库。交易日历必须先证明最新完成周/月边界；当前未完成的周/月 bar 不进入证据，calendar/source/period-end/warm-up 不可证明时保持 MISSING/PARTIAL。周/月首版只复用 `StockTrendAnalyzer` 的描述性趋势/量能/MACD/RSI 投影与 `price-structure-v1` 的 confirmed Pivot/Swing，明确不消费其 buy_signal/signal_score 作为跨周期独立投票；月线历史不足可以继续缺失，周线可先 READY。当前 `StockDaily` 仅保存 provider 名称、尚未持久化 `adjustment_basis`，因此输出必须标记 `cross_run_persistence_eligible=false / ADJUSTMENT_BASIS_NOT_PERSISTED`；这不会阻止同一运行内的 completed-prefix 证据，但禁止把该 SQLite 历史冒充已具备复权身份的跨运行 canonical store。日线继续由现有八族 owner 负责，60m/30m/15m/5m 在 completed-bar/session 合同未建立前保持 MISSING。Investor Brief 只填充同一个 `timeframe_thesis` seam，不新建报告模板；跨周期一致/冲突用于 context/confirmation，不能机械计成多票。
+
 ## 生命周期、去重与状态
 
 `src/services/decision_signal_service.py` 是信号生命周期的主入口：
@@ -62,6 +78,42 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 - `decision_profile` 参与信号身份：`NULL` 只与 `NULL` 匹配，非空 profile 只与相同 profile 匹配。Exact dedup、relaxed dedup、horizon/phase fill、expired refresh、active invalidation 和 stale backfill invalidation 都遵循该 same-profile 语义。
 - 新的相反 active 信号只会把同 profile 的旧 active 信号标记为 `invalidated`，并把失效来源写入 metadata。不同非 `NULL` profile 可并存，即使 action 相反。
 - Expired duplicate refresh 不会改写 `decision_profile`，只能刷新同 profile 记录。
+
+## Prediction Ledger V1（研究基础）
+
+`Prediction Ledger V1` 复用现有 `AnalysisHistory → DecisionSignal` 写入链，在分析历史成功保存后追加一条低敏、append-only 的确定性预测快照；它不是第二数据库、第二决策引擎或新的用户可见信号 API。
+
+- 只消费当前 `dashboard.factor_decision` 的结构化证据族、已存在的 `canonical_decision.action`、DecisionSignal 身份/计划字段和来源时间；canonical decision、signal id、market 或 horizon 任一缺失都不落账，不允许把普通 signal action 冒充 canonical decision；也不把 `investor_brief`、LLM reasoning 或整份 `raw_result/context_snapshot` 当训练特征复制入账本。
+- `prediction_hash`、`evidence_hash`、`feature_schema_hash` 使用稳定 canonical JSON + SHA-256；同内容重放 `ON CONFLICT DO NOTHING`，证据变化产生新行，既有行不 refresh。
+- `analysis_history_id` / `decision_signal_id` 是弱引用。普通历史清理可以删除报告/信号生命周期数据，但不得级联删除已冻结的 Prediction Ledger 行。
+- 当前 `AnalysisHistory.created_at` 仍是 naive datetime，行情 `available_at`、`adjustment_basis`、universe snapshot 与跨运行 durable store 也尚未完整绑定，因此 V1 会把这些缺口写入 `pit_ineligibility_reasons`，默认不能进入训练集。
+- 当前持久化状态固定为 `LOCAL_DB_ONLY`；GitHub-hosted runner 本地 SQLite 仍不能冒充跨运行 Prediction Ledger。R2/Parquet/Secret、PIT Dataset 和模型训练必须经过独立 admission。
+- 现有 `DecisionSignalOutcomeService` / `SkillOpinionOutcomeService` 继续作为 outcome evaluator owner；V1 不复制 evaluator。后续要进入正式 PIT Dataset 时，terminal outcome correction 必须使用追加式版本记录，而不是 `force` 覆盖训练证据。
+
+### Prediction Ledger V2 / PredictionOutcome PIT foundation
+
+PIT foundation 继续复用同一个 DSA SQLite / `DatabaseManager`，不新增第二数据库、第二 scheduler 或用户可见交易 API。`prediction_ledger` 仍是唯一 prediction snapshot owner；V2 只追加 nullable、向后兼容的研究身份列，legacy 行不会被猜测回填：`decision_timezone`、版本化 asset identity hash/json、实际 consumed completed-history `data_snapshot_identity`，以及独立于 UI request origin 的 research `selection_source / selection_context`。
+
+- A 股首个 asset identity 固定记录标准化代码、SH/SZ/BJ exchange、`XSHG`、`Asia/Shanghai` 与 `CNY`。完整 D/W/M technical evidence 的 data snapshot hash 由同一 `multi_timeframe_structure_service` 对实际消费的 completed daily-history prefix 生成；单根 daily-bar identity 不能替代 full-history identity。
+- adjustment basis 只在 exact provider route 能证明时绑定。当前 AkShare A-share history route 与 direct `TencentFetcher` 明确请求 `qfq`；其他来源仍保持 unproven，不做“CN 默认前复权”的推断。
+- research route 只区分 `AUTO_SCREEN` 与 `SPECIFIED_CODES`。`manual/autocomplete/import/image` 仍只是 API/UI request origin；AUTO_SCREEN 复用现有 screening provenance，但 `run_id` 不冒充 immutable universe snapshot。首个 asset-level Meta-filter dataset 不把 universe membership 设为普遍前置，只有未来 AUTO_SCREEN selection-efficacy 研究才要求完整 universe identity。
+- `PredictionOutcome` 是同库 append-only research sidecar，不替换现有 operational `DecisionSignalOutcome`。因为 canonical `WAIT` 对应 public `watch`，而现有 directional outcome service 会把 `watch` 视为 non-directional，所以 research outcome 由薄 `PredictionOutcomeService` 直接复用既有 `BacktestEngine + StockRepository` primitives。
+- 第一主标签保持 `META_TAKE_NET_POSITIVE_NEXT_OPEN_3S_FIXED_CLOSE_V1`：盘后 prediction 的最早标准化 entry 是下一交易日 open，第三个 forward session close 固定退出；主标签不使用 dynamic stop/take。cost identity 必须显式注入，缺失不能默认为零成本；仓库不内置未经 currentness 核验/批准的 A 股 fee/tax/slippage 数值。
+- `cost-identity-v2` 将 market/instrument/exchange/currency、规则有效期、来源/版本、结构化 commission basis、冻结的 `PER_SIDE_MAX_NOTIONAL_RATE_OR_MINIMUM_CNY` 最低佣金政策、显式费税率、双边 slippage 与冻结的 `reference_entry_notional_cny` 一并纳入 canonical hash。commission basis 必须显式声明 `ALL_IN...OTHER_IS_TRANSFER_ONLY` 或 `NET...OTHER_INCLUDES_THEM`，拒绝语义含混的 all-in/net 口径，避免经手费/监管费在券商佣金与 `other_*` 中重复计入。绝对最低佣金按每边 `max(notional × commission_rate, minimum_commission_cny)` 计算；reference notional 是预声明研究假设，禁止按历史 P&L 搜参。entry/exit 任一交易日落出同一 cost identity 有效期即 `UNLABELABLE`，当前规则不得回填未知历史区间；cost 的 market/instrument/exchange/currency 必须与 Ledger 冻结资产身份一致。
+- `execution-identity-v1` 是 source-neutral 的后验执行证据合同，不绑定 Tushare/BaoStock 或任何单一 provider。首个训练 slice 只接受 `cn/stock + SH|SZ + XSHG`，并显式冻结 policy/source/version/evidence hash、exact 3 个 expected XSHG sessions、admitted scope 以及 entry/exit hard-nonfill 状态。`UNKNOWN`、entry hard nonfill、exit hard nonfill、或已完成 expected session 缺 bar 均为 `UNLABELABLE`；calendar 无法证明则 `EVALUATION_BLOCKED` 且不写 terminal outcome；第三个 expected session 尚未完成则 `UNMATURED`。日线 OHLC 不得推断排队成交。
+- PredictionOutcome v3 不再把“数据库中后续三条记录”冒充“后三个交易 session”：由 fail-closed XSHG helper 生成 exact sessions，并逐日调用 exact-date StockDaily lookup；缺 session 不向后跳。`execution_identity_hash/json` 作为 nullable append-only outcome evidence 持久化，hash 进入 substantive outcome identity、但不进入 root identity，所以 provider/evidence correction 仍沿用同 root 的 `supersedes_outcome_hash + correction_reason`；`prediction-outcome-fixed-horizon-v3` 与旧 v1/v2 engine identity 分离，旧 outcome 不回写。
+- cost identity 与 execution mechanics 合并通过仍不足以打开训练。历史 ST/风险警示、上市阶段、每日涨跌停价/停复牌等实际 evidence 的 provider rights、PIT 时点与 durable referenced bytes 继续独立 admission；核心 evaluator 只消费已冻结 execution identity，不自行重算历史交易所规则，也不把当前名称/代码前缀回填历史。
+- 这些身份列/sidecar 仍不等于“历史 PIT 数据已经具备”。`LOCAL_DB_ONLY`、历史 provider vintage、durable referenced bytes、正式 numeric cost identity、execution realism 与 PIT gap 等 gate 继续独立阻止 unattended training。
+
+### PIT Dataset manifest foundation
+
+首个 PIT Dataset 不复制 Prediction Ledger feature rows 或 PredictionOutcome label rows，而是在同一 DSA SQLite 中追加 immutable `PITDatasetManifestRecord`，只绑定它们的不可变身份、split assignment、purge/exclusion reason 与训练准入状态。首个 purpose 固定为 `ASSET_LEVEL_META_FILTER_ON_SELECTED_OPPORTUNITIES_V1`，只消费 `stock_trend_quality_pullback_v1` 的 `WAIT + PROVEN + hard_veto=false` 白盒机会。
+
+- split 固定为 `XSHG_SESSION_GROUPED_CHRONO_60_20_20_PURGED_V1`：按 `data_as_of` 的 XSHG decision session 分组，最早 60% 为 TRAIN、随后 20% 为 VALIDATION、最新 20% 为 FINAL_TEST；同 session 不跨 fold，禁止 random shuffle。
+- TRAIN/VALIDATION 只绑定各自下一个 block cutoff 之前已经 `available_at` 可知的 effective Outcome correction，并要求 label exit session 严格早于下一个 block 的首个 session；越界或晚到 correction 记录 purge reason，不移动边界来改善结果。
+- FINAL_TEST 永久以 `SEALED` 状态写入 manifest。assignment 只记录 prediction/outcome/data identity 与可审计时间边界，不复制 `label_value`、收益或命中结果，避免开发 consumer 从 manifest 直接读取测试集答案。
+- AUTO_SCREEN / SPECIFIED_CODES 保留独立 selection route；当前 asset-level Meta-filter purpose 不要求完整 universe snapshot，只有未来 selection-efficacy purpose 才需要 immutable universe membership。
+- 当前 `LOCAL_DB_ONLY`、durable referenced bytes 未准入、正式 numeric cost identity 未批准、execution realism 未批准、PIT gap 或任一 split 在合法 purge 后为空，都使 `TRAINING_ADMISSION=BLOCKED`。manifest foundation 不等于已经允许训练、校准或打开 FINAL_TEST。
 
 ## API
 

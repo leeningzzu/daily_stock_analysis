@@ -62,6 +62,104 @@ def _attach_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
     return result
 
 
+def _make_investor_brief_result() -> AnalysisResult:
+    return AnalysisResult(
+        code="600519",
+        name="贵州茅台",
+        sentiment_score=43,
+        trend_prediction="震荡",
+        operation_advice="回避",
+        analysis_summary="旧分析摘要（不得作为第一屏结论）",
+        report_language="zh",
+        dashboard={
+            "core_conclusion": {
+                "one_sentence": "旧核心结论（不得出现）",
+                "time_sensitivity": "旧时效提示（不得出现）",
+                "position_advice": {
+                    "no_position": "不新增仓位；等待趋势和量价重新确认。",
+                    "has_position": "按既有风险计划管理；不因本报告生成新的卖出指令。",
+                },
+            },
+            "intelligence": {},
+            "battle_plan": {},
+            "factor_decision": {
+                "conclusion": "旧因子结论（不得重复）",
+                "composite_score": 43,
+                "historical_reference": {"display": "样本不足，暂不展示"},
+                "current_probability": {"display": "暂不提供（尚未完成独立校准）"},
+                "investor_brief": {
+                    "schema_version": "investor-brief-v1",
+                    "coverage": {
+                        "monthly": "MISSING",
+                        "weekly": "MISSING",
+                        "daily": "PROVEN_CURRENT",
+                        "60m": "MISSING",
+                        "30m": "MISSING",
+                        "15m": "MISSING",
+                        "5m": "MISSING",
+                    },
+                    "coverage_text": "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+                    "canonical": {
+                        "authority": "stock_trend_quality_pullback_v1",
+                        "action": "PASS",
+                        "public_action": "avoid",
+                        "evidence_state": "PROVEN",
+                        "hard_veto": True,
+                        "reason_codes": ["WEAK_TREND"],
+                    },
+                    "one_line_conclusion": "当前偏弱，暂不追高，等待趋势重新转强。",
+                    "fused_paragraph": "日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。",
+                    "timeframe_thesis": {
+                        "monthly": {
+                            "status": "MISSING",
+                            "role": "LONG_TERM_CONTEXT",
+                            "summary": None,
+                        },
+                        "weekly": {
+                            "status": "MISSING",
+                            "role": "PRIMARY_TREND_CONTEXT",
+                            "summary": None,
+                        },
+                        "daily": {
+                            "status": "PARTIAL_CURRENT",
+                            "role": "PRIMARY_SETUP",
+                            "summary": "趋势偏弱；量价尚未确认重新转强",
+                        },
+                        "60m": {
+                            "status": "MISSING",
+                            "role": "OPTIONAL_BRIDGE",
+                            "summary": None,
+                        },
+                    },
+                    "short_term_execution_panel": {
+                        "status": "MISSING",
+                        "state": "DATA_INSUFFICIENT",
+                        "summary": None,
+                    },
+                    "current_price": {"value": 1450.0, "source_state": "PROVEN_CURRENT"},
+                    "key_levels": {"support": 1400.0, "resistance": 1500.0},
+                    "trigger": "重新站上 1500 且放量确认",
+                    "invalidation": "跌破 1400 且放量",
+                    "risk_notes": [
+                        "弱趋势仍未修复",
+                        "估值证据仍有限",
+                        "第三条风险不应进入第一屏",
+                    ],
+                    "valuation": {
+                        "bucket": "合理",
+                        "summary": "PE/PB 仅作保守参考",
+                        "uncertainty": "缺少历史分位",
+                    },
+                    "historical_reference": {
+                        "available": False,
+                        "reason": "尚未完成 PIT 同策略验证",
+                    },
+                },
+            },
+        },
+    )
+
+
 def _make_feishu_message() -> BotMessage:
     return BotMessage(
         platform="feishu",
@@ -823,6 +921,327 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertEqual(mock_dashboard.call_count, 3)
         mock_brief.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    def test_asset_investor_brief_renders_once_in_fallback_and_suppresses_legacy(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        out = NotificationService().generate_dashboard_report(
+            [_make_investor_brief_result()],
+            report_date="2026-09-14",
+        )
+
+        self.assertEqual(out.count("当前偏弱，暂不追高，等待趋势重新转强。"), 1)
+        self.assertEqual(out.count("日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。"), 1)
+        self.assertIn("**技术参考分**: 43/100", out)
+        self.assertIn("**当前价格**: 1450.0", out)
+        self.assertIn("**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）", out)
+        self.assertIn("**关键位置**: 结构支撑 1400.0｜结构压力 1500.0", out)
+        self.assertIn(
+            "**周期覆盖**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+            out,
+        )
+        self.assertNotIn("MISSING", out)
+        self.assertIn("**多周期量价与形态**:", out)
+        self.assertIn("- 日线：趋势偏弱；量价尚未确认重新转强", out)
+        self.assertNotIn("**短线波段 30/15/5m**", out)
+        self.assertIn("**历史参考胜率**: 暂不提供（尚未完成 PIT 同策略验证）", out)
+        self.assertIn("**当前机会概率**: 暂不提供（尚未完成独立校准）", out)
+        self.assertIn("- 弱趋势仍未修复", out)
+        self.assertIn("- 估值证据仍有限", out)
+        self.assertNotIn("第三条风险不应进入第一屏", out)
+        self.assertNotIn("旧核心结论（不得出现）", out)
+        self.assertNotIn("旧因子结论（不得重复）", out)
+        self.assertNotIn("旧空仓建议（不得出现）", out)
+        self.assertNotIn("### 📌 核心结论", out)
+        self.assertNotIn("### 🧭 综合评估", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_asset_investor_brief_template_matches_fallback_semantics(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        fallback = NotificationService().generate_dashboard_report(
+            [result],
+            report_date="2026-09-14",
+        )
+
+        mock_get_config.return_value = _make_config(report_renderer_enabled=True)
+        rendered = NotificationService().generate_dashboard_report(
+            [result],
+            report_date="2026-09-14",
+        )
+
+        shared_markers = [
+            "当前偏弱，暂不追高，等待趋势重新转强。",
+            "日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。",
+            "**技术参考分**: 43/100",
+            "**当前价格**: 1450.0",
+            "合理",
+            "PE/PB 仅作保守参考",
+            "结构支撑 1400.0",
+            "结构压力 1500.0",
+            "重新站上 1500 且放量确认",
+            "跌破 1400 且放量",
+            "当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+            "尚未完成 PIT 同策略验证",
+            "暂不提供（尚未完成独立校准）",
+            "弱趋势仍未修复",
+            "估值证据仍有限",
+        ]
+        for marker in shared_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, fallback)
+                self.assertIn(marker, rendered)
+
+        for output in (fallback, rendered):
+            self.assertEqual(output.count("当前偏弱，暂不追高，等待趋势重新转强。"), 1)
+            self.assertEqual(output.count("日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。"), 1)
+            self.assertNotIn("旧核心结论（不得出现）", output)
+            self.assertNotIn("旧因子结论（不得重复）", output)
+            self.assertNotIn("### 📌 核心结论", output)
+            self.assertNotIn("### 🧭 综合评估", output)
+
+    @mock.patch("src.notification.get_config")
+    def test_investor_notification_projection_is_compact_ordered_and_missingness_safe(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+
+        for renderer_enabled in (False, True):
+            with self.subTest(report_renderer_enabled=renderer_enabled):
+                mock_get_config.return_value = _make_config(
+                    report_renderer_enabled=renderer_enabled
+                )
+                out = NotificationService().generate_brief_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+
+                markers = [
+                    "**综合结论**: 当前偏弱，暂不追高，等待趋势重新转强。",
+                    "日线趋势仍偏弱，量价尚未确认重新转强；当前以等待确认为主。",
+                    "**估值**: 合理｜PE/PB 仅作保守参考（不确定性：缺少历史分位）",
+                    "**多周期**: 当前证据覆盖：日线已分析；月线、周线、60分钟、30分钟、15分钟和5分钟尚未进入生产判断。",
+                    "**趋势/量价**: 日线：趋势偏弱；量价尚未确认重新转强",
+                    "**关键位置**: 结构支撑 1400.0｜结构压力 1500.0",
+                    "**触发条件**: 重新站上 1500 且放量确认",
+                    "**失效条件**: 跌破 1400 且放量",
+                    "**操作**: 空仓：不新增仓位；等待趋势和量价重新确认。｜持仓：按既有风险计划管理；不因本报告生成新的卖出指令。",
+                    "**主要风险**:",
+                    "- 弱趋势仍未修复",
+                    "- 估值证据仍有限",
+                ]
+                for marker in markers:
+                    self.assertIn(marker, out)
+
+                positions = [out.index(marker) for marker in markers[:10]]
+                self.assertEqual(positions, sorted(positions))
+                self.assertNotIn("第三条风险不应进入第一屏", out)
+                self.assertNotIn("MISSING", out)
+                self.assertNotIn("**技术参考分**", out)
+                self.assertNotIn("**历史参考胜率**", out)
+                self.assertNotIn("**当前机会概率**", out)
+                self.assertNotIn("旧核心结论（不得出现）", out)
+                self.assertNotIn("旧因子结论（不得重复）", out)
+                self.assertNotIn("### 📊 数据透视", out)
+                self.assertNotIn("盘中决策护栏", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_future_ready_mtf_and_short_term_schema_renders_without_new_authority(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        brief["timeframe_thesis"]["monthly"] = {
+            "status": "READY",
+            "role": "LONG_TERM_CONTEXT",
+            "summary": "月线平台收敛，等待方向确认",
+        }
+        brief["timeframe_thesis"]["weekly"] = {
+            "status": "READY",
+            "role": "PRIMARY_TREND_CONTEXT",
+            "summary": "周线趋势仍受压",
+        }
+        brief["short_term_execution_panel"] = {
+            "status": "READY",
+            "state": "WAIT_FOR_TRIGGER",
+            "summary": "30m 主结构未转强；15m 等待确认；5m 仅作时点。",
+        }
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            out = NotificationService().generate_dashboard_report(
+                [result],
+                report_date="2026-09-14",
+            )
+            self.assertIn("月线：月线平台收敛，等待方向确认", out)
+            self.assertIn("周线：周线趋势仍受压", out)
+            self.assertIn("短线波段 30/15/5m", out)
+            self.assertEqual(
+                out.count("当前偏弱，暂不追高，等待趋势重新转强。"),
+                1,
+            )
+
+    @mock.patch("src.notification.get_config")
+    def test_etf_valuation_label_and_explicit_short_timeframes_render_from_same_brief(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        brief = result.dashboard["factor_decision"]["investor_brief"]
+        brief["asset_type"] = "etf"
+        brief["valuation"] = {
+            "status": "PARTIAL_CURRENT",
+            "label": "底层估值",
+            "summary": "近十年62%分位",
+            "uncertainty": "",
+        }
+        brief["short_term_execution_panel"] = {
+            "status": "READY",
+            "state": "WAIT_FOR_TRIGGER",
+            "30m": {
+                "status": "READY",
+                "role": "PRIMARY_STRUCTURE",
+                "summary": "顶背离已经确认",
+            },
+            "15m": {
+                "status": "READY",
+                "role": "TRIGGER_CONFIRMATION",
+                "summary": "死叉后进入整理",
+            },
+            "5m": {
+                "status": "READY",
+                "role": "MICRO_TIMING",
+                "summary": "量能继续收缩",
+            },
+            "summary": None,
+        }
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            service = NotificationService()
+            full = service.generate_dashboard_report(
+                [result],
+                report_date="2026-09-14",
+            )
+            compact = service.generate_brief_report([result])
+
+            for rendered in (full, compact):
+                self.assertIn("**底层估值**: 近十年62%分位", rendered)
+                self.assertIn("30分钟：顶背离已经确认", rendered)
+                self.assertIn("15分钟：死叉后进入整理", rendered)
+                self.assertIn("5分钟：量能继续收缩", rendered)
+
+    @mock.patch("src.notification.get_config")
+    def test_degraded_explanation_status_is_transparent_and_does_not_duplicate_legacy_sections(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        factor = result.dashboard["factor_decision"]
+        factor["explanation_status"] = {
+            "state": "UNAVAILABLE",
+            "mode": "DETERMINISTIC_DEGRADED",
+            "reason": "LLM_EXPLANATION_UNAVAILABLE",
+        }
+        factor["investor_brief"]["explanation_status"] = dict(
+            factor["explanation_status"]
+        )
+
+        for renderer_enabled in (False, True):
+            mock_get_config.return_value = _make_config(
+                report_renderer_enabled=renderer_enabled
+            )
+            out = NotificationService().generate_dashboard_report(
+                [result],
+                report_date="2026-09-14",
+            )
+            self.assertEqual(
+                out.count("LLM 暂不可用；本报告仅依据已证明的确定性证据生成。"),
+                1,
+            )
+            self.assertNotIn("旧核心结论（不得出现）", out)
+            self.assertNotIn("旧因子结论（不得重复）", out)
+            compact = NotificationService().generate_brief_report([result])
+            self.assertNotIn("LLM 暂不可用", compact)
+            self.assertNotIn("解释层", compact)
+
+    @mock.patch("src.notification.get_config")
+    def test_asset_investor_brief_suppresses_unbound_llm_evidence_panels_and_generic_levels(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        result.dashboard["intelligence"] = {
+            "sentiment_summary": "UNBOUND_NEWS_SENTIMENT",
+            "earnings_outlook": "UNBOUND_EARNINGS_OUTLOOK",
+            "risk_alerts": ["UNBOUND_INTEL_RISK"],
+            "positive_catalysts": ["UNBOUND_VALUATION_CATALYST"],
+            "latest_news": "UNBOUND_LATEST_NEWS",
+        }
+        result.dashboard["signal_attribution"] = {
+            "technical_indicators": 20,
+            "news_sentiment": 30,
+            "fundamentals": 30,
+            "market_conditions": 20,
+            "strongest_bullish_signal": "UNBOUND_HISTORICAL_VALUATION",
+            "strongest_bearish_signal": "UNBOUND_BEARISH_SIGNAL",
+        }
+        result.dashboard["data_perspective"] = {
+            "price_position": {
+                "current_price": 1450.0,
+                "ma5": 1451.0,
+                "ma10": 1448.0,
+                "ma20": 1440.0,
+                "bias_ma5": -0.07,
+                "bias_status": "安全",
+                "support_level": 1399.0,
+                "resistance_level": 1499.0,
+            }
+        }
+
+        for enabled in (False, True):
+            with self.subTest(report_renderer_enabled=enabled):
+                mock_get_config.return_value = _make_config(report_renderer_enabled=enabled)
+                out = NotificationService().generate_dashboard_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+                self.assertIn("结构支撑 1400.0", out)
+                self.assertIn("结构压力 1500.0", out)
+                self.assertNotIn("UNBOUND_NEWS_SENTIMENT", out)
+                self.assertNotIn("UNBOUND_EARNINGS_OUTLOOK", out)
+                self.assertNotIn("UNBOUND_INTEL_RISK", out)
+                self.assertNotIn("UNBOUND_VALUATION_CATALYST", out)
+                self.assertNotIn("UNBOUND_LATEST_NEWS", out)
+                self.assertNotIn("UNBOUND_HISTORICAL_VALUATION", out)
+                self.assertNotIn("UNBOUND_BEARISH_SIGNAL", out)
+                self.assertNotIn("| 支撑位 | 1399.0 |", out)
+                self.assertNotIn("| 压力位 | 1499.0 |", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_asset_investor_brief_missing_preserves_legacy_core_and_factor(
+        self, mock_get_config: mock.MagicMock
+    ):
+        result = _make_investor_brief_result()
+        factor_decision = dict(result.dashboard["factor_decision"])
+        factor_decision.pop("investor_brief")
+        result.dashboard["factor_decision"] = factor_decision
+
+        for enabled in (False, True):
+            with self.subTest(report_renderer_enabled=enabled):
+                mock_get_config.return_value = _make_config(report_renderer_enabled=enabled)
+                out = NotificationService().generate_dashboard_report(
+                    [result],
+                    report_date="2026-09-14",
+                )
+                self.assertIn("旧核心结论（不得出现）", out)
+                self.assertIn("旧因子结论（不得重复）", out)
+                self.assertNotIn("### 🧭 投资者简报", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_single_stock_report_keeps_legacy_simple_format(self, mock_get_config: mock.MagicMock):

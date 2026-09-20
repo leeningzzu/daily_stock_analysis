@@ -695,6 +695,7 @@ class AnalysisTaskQueue:
             trace_id = task.trace_id or task_id
             analysis_phase = task.analysis_phase
             query_source = task.query_source or "api"
+            selection_source = task.selection_source
             portfolio_context = dict(task.portfolio_context) if isinstance(task.portfolio_context, dict) else None
             task.status = TaskStatus.PROCESSING
             task.started_at = datetime.now()
@@ -734,6 +735,7 @@ class AnalysisTaskQueue:
                 skills=skills,
                 analysis_phase=analysis_phase,
                 query_source=query_source,
+                selection_source=selection_source,
                 portfolio_context=portfolio_context,
                 report_language=report_language,
             )

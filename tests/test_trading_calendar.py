@@ -53,6 +53,13 @@ class _FakeCalendar:
             raise ValueError("no previous session")
         return pd.Timestamp(self._sessions[index - 1])
 
+    def next_session(self, session: pd.Timestamp) -> pd.Timestamp:
+        session_date = session.date()
+        index = self._sessions.index(session_date)
+        if index + 1 >= len(self._sessions):
+            raise ValueError("no next session")
+        return pd.Timestamp(self._sessions[index + 1])
+
     def session_open(self, session: pd.Timestamp) -> pd.Timestamp:
         local_open = datetime.combine(
             session.date(),
@@ -145,6 +152,102 @@ class _CloseTimeCalendar(_FakeCalendar):
         return pd.Timestamp(local_close).tz_convert("UTC")
 
 
+class OutcomeSessionResolutionTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calendar = _FakeCalendar(
+            sessions=[
+                date(2026, 9, 18),
+                date(2026, 9, 21),
+                date(2026, 9, 22),
+                date(2026, 9, 24),
+            ],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+
+    def _patch_calendar(self):
+        return (
+            patch.object(trading_calendar, "_XCALS_AVAILABLE", True),
+            patch.object(
+                trading_calendar,
+                "xcals",
+                _calendar_namespace(self.calendar),
+                create=True,
+            ),
+        )
+
+    def test_forward_sessions_are_exact_exchange_sessions(self):
+        available, namespace = self._patch_calendar()
+        with available, namespace:
+            self.assertEqual(
+                trading_calendar.resolve_forward_sessions_fail_closed(
+                    "cn",
+                    date(2026, 9, 18),
+                    3,
+                ),
+                [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 24)],
+            )
+
+    def test_forward_sessions_from_non_session_start_at_next_session(self):
+        available, namespace = self._patch_calendar()
+        with available, namespace:
+            self.assertEqual(
+                trading_calendar.resolve_forward_sessions_fail_closed(
+                    "cn",
+                    date(2026, 9, 20),
+                    2,
+                ),
+                [date(2026, 9, 21), date(2026, 9, 22)],
+            )
+
+    def test_calendar_unavailable_fails_closed(self):
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertIsNone(
+                trading_calendar.resolve_forward_sessions_fail_closed(
+                    "cn", date(2026, 9, 18), 3
+                )
+            )
+            self.assertIsNone(
+                trading_calendar.resolve_latest_completed_session_fail_closed("cn")
+            )
+
+    def test_calendar_backend_error_fails_closed(self):
+        broken = SimpleNamespace(get_calendar=lambda _ex: (_ for _ in ()).throw(RuntimeError("boom")))
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            broken,
+            create=True,
+        ):
+            self.assertIsNone(
+                trading_calendar.resolve_forward_sessions_fail_closed(
+                    "cn", date(2026, 9, 18), 3
+                )
+            )
+            self.assertIsNone(
+                trading_calendar.resolve_latest_completed_session_fail_closed("cn")
+            )
+
+    def test_latest_completed_session_respects_close_and_non_trading_day(self):
+        available, namespace = self._patch_calendar()
+        with available, namespace:
+            before_close = trading_calendar.resolve_latest_completed_session_fail_closed(
+                "cn",
+                datetime(2026, 9, 21, 14, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+            after_close = trading_calendar.resolve_latest_completed_session_fail_closed(
+                "cn",
+                datetime(2026, 9, 21, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+            non_trading = trading_calendar.resolve_latest_completed_session_fail_closed(
+                "cn",
+                datetime(2026, 9, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+        self.assertEqual(before_close, date(2026, 9, 18))
+        self.assertEqual(after_close, date(2026, 9, 21))
+        self.assertEqual(non_trading, date(2026, 9, 22))
+
+
 class HistoricalDailyBarDateTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.calendar = _FakeCalendar(
@@ -193,6 +296,46 @@ class HistoricalDailyBarDateTestCase(unittest.TestCase):
         for phase in (None, "unknown", "postmarket"):
             with self.subTest(phase=phase):
                 self.assertIsNone(self._resolve(date(2024, 1, 7), phase))
+
+
+class CompletedTimeframeBarDateTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calendar = _FakeCalendar(
+            sessions=[
+                date(2024, 1, 26),
+                date(2024, 1, 29),
+                date(2024, 1, 30),
+                date(2024, 1, 31),
+                date(2024, 2, 1),
+                date(2024, 2, 2),
+                date(2024, 2, 5),
+            ],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+
+    def _resolve(self, target_date: date, timeframe: str) -> Optional[date]:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(self.calendar),
+            create=True,
+        ):
+            return trading_calendar.resolve_completed_timeframe_bar_date(
+                "cn", target_date, timeframe
+            )
+
+    def test_weekly_uses_prior_week_until_last_session_then_current_week(self):
+        self.assertEqual(self._resolve(date(2024, 1, 31), "1w"), date(2024, 1, 26))
+        self.assertEqual(self._resolve(date(2024, 2, 2), "1w"), date(2024, 2, 2))
+
+    def test_monthly_uses_current_month_only_after_month_boundary_is_proven(self):
+        self.assertEqual(self._resolve(date(2024, 1, 31), "1mo"), date(2024, 1, 31))
+        self.assertEqual(self._resolve(date(2024, 2, 2), "1mo"), date(2024, 1, 31))
+
+    def test_unknown_timeframe_and_non_session_fail_closed(self):
+        self.assertIsNone(self._resolve(date(2024, 2, 2), "30m"))
+        self.assertIsNone(self._resolve(date(2024, 2, 3), "1w"))
 
 
 class EffectiveTradingDateTestCase(unittest.TestCase):

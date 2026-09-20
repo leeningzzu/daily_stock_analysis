@@ -5,6 +5,8 @@ Unit tests for StockTrendAnalyzer._generate_signal bias and strong-trend relief 
 
 import math
 import unittest
+
+import pandas as pd
 from unittest.mock import patch, MagicMock
 
 from src.stock_analyzer import (
@@ -73,6 +75,38 @@ class StockAnalyzerBiasTestCase(unittest.TestCase):
             any(substring in s for s in items),
             msg=f"Did not expect substring '{substring}' in {items}",
         )
+
+    def test_macd_bullish_label_does_not_claim_moving_average_alignment(self) -> None:
+        df = pd.DataFrame(
+            {
+                "MACD_DIF": [0.4] * (self.analyzer.MACD_SLOW - 1) + [0.5],
+                "MACD_DEA": [0.2] * (self.analyzer.MACD_SLOW - 1) + [0.3],
+                "MACD_BAR": [0.2] * self.analyzer.MACD_SLOW,
+            }
+        )
+        result = _make_result()
+
+        self.analyzer._analyze_macd(df, result)
+
+        self.assertEqual(result.macd_status, MACDStatus.BULLISH)
+        self.assertIn("MACD DIF/DEA", result.macd_signal)
+        self.assertNotIn("多头排列", result.macd_signal)
+
+    def test_macd_bearish_label_does_not_claim_moving_average_alignment(self) -> None:
+        df = pd.DataFrame(
+            {
+                "MACD_DIF": [-0.4] * (self.analyzer.MACD_SLOW - 1) + [-0.5],
+                "MACD_DEA": [-0.2] * (self.analyzer.MACD_SLOW - 1) + [-0.3],
+                "MACD_BAR": [-0.2] * self.analyzer.MACD_SLOW,
+            }
+        )
+        result = _make_result()
+
+        self.analyzer._analyze_macd(df, result)
+
+        self.assertEqual(result.macd_status, MACDStatus.BEARISH)
+        self.assertIn("MACD DIF/DEA", result.macd_signal)
+        self.assertNotIn("空头排列", result.macd_signal)
 
     @patch("src.stock_analyzer.get_config")
     def test_bias_nan_defense(self, mock_get_config: MagicMock) -> None:

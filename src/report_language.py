@@ -133,28 +133,28 @@ _CONFIDENCE_LEVEL_TRANSLATIONS = {
     "low": {"zh": "低", "en": "Low", "ko": "낮음"},
 }
 
-_STRATEGY_SIGNAL_CANONICAL_MAP = {
-    "strong buy": "strong_buy",
-    "strong_buy": "strong_buy",
-    "强烈买入": "strong_buy",
-    "buy": "buy",
-    "买入": "buy",
-    "hold": "hold",
-    "持有": "hold",
-    "sell": "sell",
-    "卖出": "sell",
-    "strong sell": "strong_sell",
-    "strong_sell": "strong_sell",
-    "强烈卖出": "strong_sell",
-}
+_STRATEGY_SIGNAL_CANONICAL_MAP = {'strong buy': 'strong_buy',
+ 'strong_buy': 'strong_buy',
+ '强烈买入': 'strong_buy',
+ 'buy': 'buy',
+ '买入': 'buy',
+ 'hold': 'hold',
+ '持有': 'hold',
+ 'sell': 'sell',
+ '卖出': 'sell',
+ 'strong sell': 'strong_sell',
+ 'strong_sell': 'strong_sell',
+ '强烈卖出': 'strong_sell',
+ 'watch': 'watch',
+ 'avoid': 'avoid'}
 
-_STRATEGY_SIGNAL_TRANSLATIONS = {
-    "strong_buy": {"zh": "强烈买入", "en": "Strong Buy", "ko": "적극 매수"},
-    "buy": {"zh": "买入", "en": "Buy", "ko": "매수"},
-    "hold": {"zh": "持有", "en": "Hold", "ko": "보유"},
-    "sell": {"zh": "卖出", "en": "Sell", "ko": "매도"},
-    "strong_sell": {"zh": "强烈卖出", "en": "Strong Sell", "ko": "적극 매도"},
-}
+_STRATEGY_SIGNAL_TRANSLATIONS = {'strong_buy': {'zh': '强烈买入', 'en': 'Strong Buy', 'ko': '적극 매수'},
+ 'buy': {'zh': '买入', 'en': 'Buy', 'ko': '매수'},
+ 'hold': {'zh': '持有', 'en': 'Hold', 'ko': '보유'},
+ 'sell': {'zh': '卖出', 'en': 'Sell', 'ko': '매도'},
+ 'strong_sell': {'zh': '强烈卖出', 'en': 'Strong Sell', 'ko': '적극 매도'},
+ 'watch': {'zh': '观望', 'en': 'Watch', 'ko': 'watch'},
+ 'avoid': {'zh': '回避', 'en': 'Avoid', 'ko': 'avoid'}}
 
 _CONSENSUS_LEVEL_CANONICAL_MAP = {
     "high": "high",
@@ -1124,6 +1124,12 @@ def normalize_strategy_synthesis_payload(value: Any) -> Dict[str, Any]:
             if isinstance(items, list)
             else []
         )
+    # P0_CANONICAL_RENDERER_SAFE_OVERRIDE_PY_R001
+    if (
+        payload.get("authority") == "stock_trend_quality_pullback_v1"
+        and payload.get("canonical_public_action") in {"watch", "avoid"}
+    ):
+        payload["final_signal"] = payload["canonical_public_action"]
     return payload
 
 

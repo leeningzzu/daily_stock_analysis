@@ -38,7 +38,7 @@ orjson>=3.10,<4             # LiteLLM runtime JSON dependency; explicitly bundle
 
 # AI analysis
 # Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.
-litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
@@ -48,6 +48,8 @@ tavily-python>=0.3.0        # Tavily Search API
 google-search-results>=2.4.0  # SerpAPI
 
 # Network requests
+boto3==1.43.98             # Private R2/S3 low-level transport for durable research-state objects
+botocore==1.43.98          # Direct Config/ClientError/Stubber API consumed by the R2 transport
 requests>=2.31.0            # HTTP requests
 markdown2>=2.4.0            # Markdown to HTML
 imgkit>=1.2.0              # Markdown to image; requires wkhtmltopdf

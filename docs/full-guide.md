@@ -701,6 +701,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --auto-screen --auto-screen-max-results 1  # 仅 GitHub workflow_dispatch 上下文；候选数 1-3
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
@@ -740,8 +741,12 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 ```yaml
 schedule:
   # UTC 时间，北京时间 = UTC + 8
-  - cron: '0 10 * * 1-5'   # 周一到周五 18:00（北京时间）
+  - cron: '0 11 * * 1-5'   # 周一到周五 19:00（北京时间，当前默认）
 ```
+
+当前 GitHub Actions schedule 还会经过严格中国交易日 gate；周末和中国法定休市日不会进入分析。
+
+当前 19:00 自动资产研究在同一个 workflow 内按两个投影执行：先运行 deterministic `AUTO_SCREEN`，股票与 A 股 ETF 各自最多 10 个深析候选、各自前 3 个作为第一屏重点，4–10 位作为紧凑备选；股票和 ETF 额度互不占用，任一资产类别允许 0 个合法候选且不会强行补满。随后仅在真实配置了 `STOCK_LIST` 时运行独立的 WATCHLIST / SPECIFIED_CODES 深析；自选不占 AUTO 的 10+10 上限，并只在 canonical 决策/证据相对上一条可比较自选历史发生材料变化时发送单独通知。完整 AUTO 审计继续写入常规日报，自选审计写入独立 `*_watchlist.md` 文件；Email/Telegram 仍消费同一组 `AnalysisResult → factor_decision → investor_brief` 事实，不新增第二个报告或通知权威。
 
 常用时间对照：
 
@@ -750,7 +755,7 @@ schedule:
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
 | 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
+| 19:00 | `'0 11 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
 #### GitHub Actions 非交易日手动运行（Issue #461 / #466）
@@ -772,9 +777,29 @@ schedule:
 手动触发步骤：
 
 1. 打开 `Actions → 每日股票分析 → Run workflow`
-2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
-3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
-4. 点击 `Run workflow`
+2. 选择 `mode`（`full` / `market-only` / `stocks-only` / `auto-screen`）
+3. 若选择 `auto-screen`，可分别设置 `auto_screen_max_results=1–10` 与 `auto_screen_etf_max_results=0–10`；两个上限独立，筛选结果仍进入同一个 shared deep-analysis / canonical decision / report consumer。
+4. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
+5. 点击 `Run workflow`
+
+#### AUTO_SCREEN 与有界人工验收
+
+普通 `mode=auto-screen` 只负责选择谁进入深析：筛选阶段关闭 LLM ranking，股票与 ETF 使用各自适用的 deterministic 筛选配置，但最终都交给现有 `run_full_analysis` / `StockAnalysisPipeline`。筛选排名只决定关注顺序，不代表胜率、校准概率或最终买入动作。ETF 路径复用现有 DSA ETF 行情 owner 和同一 AlphaSift-derived screening pipeline，不套用个股 PE/PB/市值质量过滤；最终仍由共享 ETF canonical decision fail-closed。
+
+一次性真实验收可显式设置 `auto_screen_bounded_live=true`，但仍只允许 `auto_screen_max_results=1` 且 `auto_screen_etf_max_results=0`，并要求 `auto_screen_bounded_model` 提供本次明确批准的模型 ID。该 bounded-live 路径仍是 `workflow_dispatch` only：深析阶段复用既有 P0 process-local boundary（单 worker、禁用 Agent/搜索/Router、模型 fallback/retry/参数恢复/完整性补全重试均为 0），强制关闭 outbound notification，并生成脱敏 `AUTO_SCREEN_ACCEPTANCE_RECEIPT_JSON`；它不会因正常 19:00 AUTO 已支持 10+10 而扩大验收权限。
+
+#### P0 有界指定股票验收
+
+`workflow_dispatch` 额外提供可选输入 `p0_stock_codes`。仅当 `mode=stocks-only` 且该输入非空时，才进入 P0 有界验收；自动定时任务及未填写该输入的人工任务继续走原有路径。
+
+- 只接受 1–2 个经仓库内股票索引确认的沪深普通 A 股；ETF、指数、非中国资产、重复代码及交易所冲突会在分析前拒绝。
+- 本次输入不读取或覆盖 `STOCK_LIST`，不改变自动任务、自选股或 AUTO_SCREEN 行为。
+- P0 固定单 worker、非 Agent、单模型、非流式；每轮最多 2 次主模型请求，输出上限 4096 tokens，不做报告补全重试、模型回退、传输重试或参数恢复。
+- P0 不初始化新闻搜索或社交搜索，Tavily、SearXNG 等搜索调用上限为 0。
+- 全部目标必须各成功一次；之后从同一组 canonical `AnalysisResult` 同时生成两种投影：详细审计报告保存到本地/Artifact，精简 `investor-brief-v1` 投资者简报作为唯一一封 Email。两者共享同一 canonical evidence/decision authority，但不要求字节完全相同。任一边界、目标、canonical 一致性或任一必需投影校验失败时，不发送通知并返回非零结果。
+- 公开动作由 `stock_trend_quality_pullback_v1` 的 deterministic `canonical_decision` 唯一控制。P0 只输出 `WAIT/watch` 或 `PASS/avoid`；LLM 仅提供解释，不能产生或覆盖 BUY/HOLD/EXIT。
+
+在非交易日进行明确授权的人工验收时，可同时设置 `force_run=true`；它只影响这次 `workflow_dispatch`，不会改变自动计划任务的 strict trading-day gate。
 
 ### 本地定时任务
 
@@ -1098,7 +1123,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 - Gmail：smtp.gmail.com:587
 
 **股票分组发往不同邮箱**（Issue #268，可选）：
-配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变 Telegram、企业微信、Webhook 等其他渠道收到的完整报告。大盘复盘会发往所有配置的邮箱。
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变其他渠道的资产集合。资产研究的 Email/Telegram 使用精简投资者通知投影，完整审计报告仍独立保存；企业微信、Webhook 等渠道继续使用各自既有投影。大盘复盘会发往所有配置的邮箱。
 
 > GitHub Actions 限制：截至 2026-03-29，仓库自带 `00-daily-analysis.yml` 不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此如果你只在仓库 Secrets / Variables 中新增这些变量，而没有修改 workflow 显式映射，它们不会进入运行进程，看起来就像“分组配置不生效”。
 

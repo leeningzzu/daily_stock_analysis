@@ -1,0 +1,45 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# ETF-specific AUTO_SCREEN profile.
+# Reuses the AlphaSift-derived Screening pipeline without stock PE/PB/market-cap semantics.
+name: etf_candidate_prefilter
+display_name: ETF候选预筛
+description: A股ETF流动性、趋势、活跃度与稳定性候选预筛；不声称已完成同类相对强弱、跟踪质量或折溢价证据，最终动作仍由共享ETF canonical decision决定
+version: "1.0"
+category: framework
+tags: [etf, candidate_prefilter, liquidity, momentum, trend]
+analysis_skills: [bull_trend]
+style:
+  risk_profile: balanced
+  holding_period: swing
+  execution_style: candidate_prefilter
+  market_regime: [risk_on, trend]
+  capital_profile: high_liquidity
+  ui_badge: ETF
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: false
+    amount_min: 20000000
+    change_pct_min: -8.0
+    change_pct_max: 8.0
+    price_min: 0.1
+    change_60d_min: -35.0
+    change_60d_max: 80.0
+  factor_weights:
+    liquidity: 0.30
+    momentum: 0.30
+    activity: 0.20
+    stability: 0.20
+  scoring_profile:
+    momentum_chase_start_pct: 5.0
+    momentum_chase_penalty_slope: 12.0
+    activity_ideal_volume_ratio: 1.8
+    activity_ideal_turnover_rate: 3.0
+    stability_hot_change_pct: 6.0
+  ranking_hints: |
+    ETF候选预筛只使用当前可观察的趋势、流动性、成交活跃度与稳定性。
+    本层不声称已具备同类ETF相对强弱、跟踪质量或折溢价证据；不使用个股PE/PB/市值质量逻辑，也不把筛选排名当成最终买入动作。
+  max_output: 10
